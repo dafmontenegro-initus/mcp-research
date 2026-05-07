@@ -118,18 +118,27 @@ Add to `%LOCALAPPDATA%\Packages\Claude_pzs8sxrjxfjjc\LocalCache\Roaming\Claude\c
 }
 ```
 
-For a company-scoped version (NWN only):
+For company-scoped versions (one server per company):
 
 ```json
 {
   "mcpServers": {
     "cerebro-nwn": {
-      "command": "C:\\Users\\TJ-Daniel M\\Documents\\GitHub\\mcp-research\\cerebro-mcp\\.venv\\Scripts\\python.exe",
+      "command": "C:\\...\\cerebro-mcp\\.venv\\Scripts\\python.exe",
       "args": [
-        "C:\\Users\\TJ-Daniel M\\Documents\\GitHub\\mcp-research\\cerebro-mcp\\server.py",
+        "C:\\...\\cerebro-mcp\\server.py",
         "--stdio",
         "--company",
         "NWN"
+      ]
+    },
+    "cerebro-dai": {
+      "command": "C:\\...\\cerebro-mcp\\.venv\\Scripts\\python.exe",
+      "args": [
+        "C:\\...\\cerebro-mcp\\server.py",
+        "--stdio",
+        "--company",
+        "DAI"
       ]
     }
   }
