@@ -1,0 +1,21 @@
+# Personal research notes — not for the repo
+_notes/
+_personal/
+_local/
+
+# Common personal file patterns
+*_research.txt
+*_links.txt
+*_notes.txt
+links.txt
+links.md
+
+# Python
+__pycache__/
+*.pyc
+.env
+.venv/
+
+# OS
+.DS_Store
+Thumbs.db
