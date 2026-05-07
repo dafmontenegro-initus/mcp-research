@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import boto3
 from botocore.exceptions import ClientError
-from config import AWS_REGION, DEV_S3_BUCKET, resolve_company
+from config import AWS_REGION, S3_BUCKET, validate_company
 from db import get_meet_conn
 
 _s3 = boto3.client("s3", region_name=AWS_REGION)
@@ -30,58 +30,69 @@ def list_meetings(
     end_before: str | None = None,
     host_email: str | None = None,
     participant_email: str | None = None,
-    limit: int = 100,
+    limit: int | None = None,
 ) -> dict:
     """
     Discover meetings in a given period for a company.
 
-    Returns one row per meeting with: meeting_uuid, title, start_time, end_time,
-    host_email, duration, has_transcript, and has_synthesis. The has_synthesis flag
-    tells you whether Cerebro already produced an AI summary — if True, call
-    get_meeting_details to read it; if False and has_transcript=1, call
-    get_meeting_transcript for the raw VTT. Always use this tool first to collect
-    the UUIDs you need for subsequent calls.
+    Always call this first to build the list of UUIDs for subsequent tool calls.
+    The response includes has_synthesis and has_transcript flags for each meeting —
+    use these to decide the next step:
+      - has_synthesis=true  → call get_meeting_details (AI summary already generated,
+                              much cheaper in tokens than reading the raw transcript)
+      - has_synthesis=false AND has_transcript=true → call get_meeting_transcript
+                              (verbatim VTT, potentially 50,000+ tokens — use sparingly)
 
-    WSR usage: set start_after to the cutoff_date extracted from the baseline ticket.
+    Volume reasoning: without date filters this can return hundreds of meetings.
+    Always set start_after (and optionally end_before) to bound the result set before
+    omitting limit. Without limit, returns all matching rows.
+
+    WSR usage: set start_after to the cutoff_date extracted from the baseline ticket title.
 
     Parameters
     ----------
-    company_id        : Company identifier (e.g. "NWN", "DAI"). Aliases resolved
-                        automatically (e.g. "TJV" → "NWN").
+    company_id        : Company identifier (e.g. "NWN", "DAI").
     start_after       : ISO date "YYYY-MM-DD" — meetings starting on or after this date.
     end_before        : ISO date "YYYY-MM-DD" — meetings starting strictly before this date.
     host_email        : Exact email address of the meeting host.
     participant_email : Partial match against the participants_emails field.
-    limit             : Maximum meetings to return (default 100, max 200).
+    limit             : Maximum meetings to return. If omitted, returns all matching rows.
+                        Use date filters to bound the query before omitting this.
     """
-    resolve_company(company_id)
-    limit = min(limit, 200)
+    err = validate_company(company_id)
+    if err:
+        return {"error": err}
 
-    conditions = ["status != 'inactive'"]
-    params: list = []
+    conditions = [
+        "m.status != 'inactive'",
+        "m.meeting_uuid IN (SELECT meeting_id FROM meetings_assets.meetings_projects WHERE project_id = %s)",
+    ]
+    params: list = [company_id.upper()]
 
     if start_after:
-        conditions.append("start_time >= %s")
+        conditions.append("m.start_time >= %s")
         params.append(start_after)
     if end_before:
-        conditions.append("start_time < %s")
+        conditions.append("m.start_time < %s")
         params.append(end_before)
     if host_email:
-        conditions.append("host_email = %s")
+        conditions.append("m.host_email = %s")
         params.append(host_email)
     if participant_email:
-        conditions.append("participants_emails LIKE %s")
+        conditions.append("m.participants_emails LIKE %s")
         params.append(f"%{participant_email}%")
 
     where = " AND ".join(conditions)
     sql = (
-        "SELECT meeting_uuid, meeting_title, start_time, end_time, host_email, "
-        "duration, has_transcript, "
-        "IF(synthesized_meeting IS NOT NULL AND synthesized_meeting != '', 1, 0) AS has_synthesis "
-        f"FROM meetings_assets.meetings WHERE {where} "
-        "ORDER BY start_time DESC LIMIT %s"
+        "SELECT m.meeting_uuid, m.meeting_title, m.start_time, m.end_time, m.host_email, "
+        "m.duration, m.has_transcript, "
+        "IF(m.synthesized_meeting IS NOT NULL AND m.synthesized_meeting != '', 1, 0) AS has_synthesis "
+        f"FROM meetings_assets.meetings m WHERE {where} "
+        "ORDER BY m.start_time DESC"
     )
-    params.append(limit)
+    if limit is not None:
+        sql += " LIMIT %s"
+        params.append(limit)
 
     conn = get_meet_conn()
     try:
@@ -106,34 +117,43 @@ def get_meeting_details(meeting_uuids: list[str], company_id: str) -> dict:
     """
     Fetch full metadata and AI synthesis for one or more meetings by UUID.
 
-    Returns synthesized_meeting (Cerebro's AI summary of the meeting — decisions,
-    action items, risks, key topics), zoom_summary, participants, duration, and
-    all date fields. Use this after list_meetings for meetings where has_synthesis
-    is True. If synthesized_meeting is empty and has_transcript is True, call
-    get_meeting_transcript instead to read the raw VTT.
+    Prefer this over get_meeting_transcript whenever has_synthesis=true — the AI summary
+    (synthesized_meeting) is already generated and is far cheaper in tokens than reading
+    the raw VTT. Returns: synthesized_meeting (decisions, action items, risks, key topics),
+    zoom_summary, participants, duration, and all date fields.
 
-    Call with batches of up to 50 UUIDs at a time to avoid oversized responses.
+    Call after list_meetings for meetings where has_synthesis=true. If synthesized_meeting
+    is empty and has_transcript=true, call get_meeting_transcript instead.
+
+    Volume reasoning: no batch limit enforced — caller decides how many UUIDs to include.
+    Keep in mind that synthesized_meeting can be several hundred tokens per meeting;
+    factor this into batch size decisions.
 
     Parameters
     ----------
     meeting_uuids : List of meeting UUIDs obtained from list_meetings.
-    company_id    : Company identifier (used for context validation).
+    company_id    : Company identifier (used for tenant isolation).
     """
+    err = validate_company(company_id)
+    if err:
+        return {"error": err}
     if not meeting_uuids:
         return {"message": "No meeting UUIDs provided."}
-    if len(meeting_uuids) > 50:
-        return {"message": "Provide at most 50 UUIDs per call. Split into batches."}
 
     placeholders = ", ".join(["%s"] * len(meeting_uuids))
     sql = (
         f"SELECT {_DETAIL_COLUMNS} "
-        f"FROM meetings_assets.meetings WHERE meeting_uuid IN ({placeholders})"
+        f"FROM meetings_assets.meetings "
+        f"WHERE meeting_uuid IN ({placeholders}) "
+        f"AND meeting_uuid IN ("
+        f"  SELECT meeting_id FROM meetings_assets.meetings_projects WHERE project_id = %s"
+        f")"
     )
 
     conn = get_meet_conn()
     try:
         with conn.cursor() as cur:
-            cur.execute(sql, meeting_uuids)
+            cur.execute(sql, [*meeting_uuids, company_id.upper()])
             rows = cur.fetchall()
     finally:
         conn.close()
@@ -152,27 +172,32 @@ def get_meeting_transcript(meeting_uuid: str, company_id: str) -> dict:
     """
     Download the raw VTT transcript for a meeting directly from S3.
 
-    Use this only for meetings where has_transcript is True but synthesized_meeting
-    is empty (i.e. Cerebro has not yet summarized this meeting). The transcript is
-    the verbatim caption file from Zoom, split into timed segments. It may be long.
-    Read it to extract decisions, action items, risks, blockers, and Wrike ticket
-    mentions that would otherwise be missed.
+    WARNING — token budget: a full transcript can exceed 50,000 tokens. Confirm with
+    the user that they need the verbatim content before calling this. In most cases,
+    get_meeting_details is preferable when has_synthesis=true.
 
-    Reads part1.vtt and part2.vtt (concatenated if both exist).
+    Use this only when has_transcript=true AND synthesized_meeting is empty (Cerebro has
+    not yet summarized this meeting), or when the user explicitly needs verbatim content.
+    The transcript is the raw Zoom caption file split into timed VTT segments.
+
+    Reads part1.vtt and part2.vtt from S3 and concatenates them if both exist.
 
     Parameters
     ----------
     meeting_uuid : UUID of the meeting (from list_meetings).
-    company_id   : Company identifier (for context).
+    company_id   : Company identifier (used to construct the S3 key).
     """
-    if not DEV_S3_BUCKET:
-        return {"message": "DEV_S3_BUCKET is not configured."}
+    err = validate_company(company_id)
+    if err:
+        return {"error": err}
+    if not S3_BUCKET:
+        return {"message": "S3_BUCKET is not configured."}
 
     parts = []
     for part_name in ("part1.vtt", "part2.vtt"):
-        key = f"{meeting_uuid}/{part_name}"
+        key = f"{company_id.upper()}/meetings/transcripts/{meeting_uuid}/{part_name}"
         try:
-            obj = _s3.get_object(Bucket=DEV_S3_BUCKET, Key=key)
+            obj = _s3.get_object(Bucket=S3_BUCKET, Key=key)
             parts.append(obj["Body"].read().decode("utf-8", errors="replace"))
         except ClientError as e:
             if e.response["Error"]["Code"] in ("NoSuchKey", "404"):
