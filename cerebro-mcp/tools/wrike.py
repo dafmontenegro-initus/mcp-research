@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from config import validate_company, wrike_table
 from db import get_wrike_conn
+from utils import fit_to_limit
 
 _DATE_FIELDS = ("due_date", "start_date", "created_date", "updated_date")
 
@@ -79,7 +80,7 @@ def find_task(query: str, company_id: str, limit: int | None = None) -> dict:
     if not rows:
         return {"message": f"No tasks found matching '{query}' for company {company_id}."}
 
-    return {"total": len(rows), "tasks": _serialize(rows)}
+    return fit_to_limit(_serialize(rows), "tasks", {"total": len(rows)})
 
 
 def list_tasks(
@@ -191,7 +192,7 @@ def list_tasks(
     if not rows:
         return {"message": "No tasks found for the given filters."}
 
-    return {"total": len(rows), "tasks": _serialize(rows)}
+    return fit_to_limit(_serialize(rows), "tasks", {"total": len(rows)})
 
 
 def get_task_details(ticket_ids: list[str], company_id: str) -> dict:
@@ -236,7 +237,7 @@ def get_task_details(ticket_ids: list[str], company_id: str) -> dict:
     if not rows:
         return {"message": "No tasks found for the given ticket IDs."}
 
-    return {"total": len(rows), "tasks": _serialize(rows)}
+    return fit_to_limit(_serialize(rows), "tasks", {"total": len(rows)})
 
 
 def get_wrike_users(company_id: str) -> dict:

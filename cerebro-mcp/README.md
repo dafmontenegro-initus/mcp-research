@@ -223,18 +223,24 @@ USER REPLY HANDLING:
 
 ### Wrike — 5 passes (call list_tasks, then get_task_details for all unique ticket_ids)
 
-Pass 1 — Baseline tickets: title_keyword=<keyword from baseline title>, no date filter
+Pass 1 — Baseline tickets: title_keyword=<keyword from baseline title>, no date filter, limit=100
 Pass 2 — New tickets: created_after=cutoff_date, status=["Active","Deferred"]
 Pass 3 — Closed this cycle: updated_after=cutoff_date, status=["Completed","Cancelled"]
-Pass 4 — Any activity: updated_after=cutoff_date (all statuses — cross-check)
+Pass 4 — Any activity: updated_after=cutoff_date (all statuses — cross-check), limit=200
 Pass 5 — Overdue: due_before=<today>, status=["Active","Deferred"]
 
-Deduplicate all ticket_ids across passes. Call get_task_details once with the full set.
+Deduplicate all ticket_ids across passes. Call get_task_details with the full set.
+If the response contains "truncated": true, call get_task_details again with the IDs
+listed in "remaining_ids" and merge results. Repeat until truncated is false or absent.
 
 ### Meetings — exhaustive sweep
 Call list_meetings with start_after=cutoff_date.
-Call get_meeting_details for ALL returned meeting UUIDs — never stop at the first few.
+Call get_meeting_details for ALL returned meeting UUIDs.
+If the response contains "truncated": true, call get_meeting_details again with the UUIDs
+in "remaining_ids" and merge results. Repeat until truncated is false or absent.
 For any meeting where synthesized_meeting is empty AND has_transcript=1, call get_meeting_transcript.
+If that response contains "truncated": true, call again with offset=<next_offset> to get
+the next chunk. Repeat until truncated is false.
 Extract from every meeting: decisions, action items with owners, risks/blockers, client
 dependencies, deliverables, and any Wrike ticket mentioned by name or number.
 

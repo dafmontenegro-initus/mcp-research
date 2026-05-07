@@ -4,6 +4,7 @@ import boto3
 from botocore.exceptions import ClientError
 from config import AWS_REGION, S3_BUCKET, validate_company
 from db import get_meet_conn
+from utils import fit_to_limit, MAX_RESPONSE_BYTES
 
 _s3 = boto3.client("s3", region_name=AWS_REGION)
 
@@ -110,7 +111,7 @@ def list_meetings(
         row["has_synthesis"] = bool(row.get("has_synthesis"))
         row["has_transcript"] = bool(row.get("has_transcript"))
 
-    return {"total": len(rows), "meetings": rows}
+    return fit_to_limit(rows, "meetings", {"total": len(rows)})
 
 
 def get_meeting_details(meeting_uuids: list[str], company_id: str) -> dict:
@@ -165,10 +166,10 @@ def get_meeting_details(meeting_uuids: list[str], company_id: str) -> dict:
     for row in rows:
         row["has_transcript"] = bool(row.get("has_transcript"))
 
-    return {"total": len(rows), "meetings": rows}
+    return fit_to_limit(rows, "meetings", {"total": len(rows)})
 
 
-def get_meeting_transcript(meeting_uuid: str, company_id: str) -> dict:
+def get_meeting_transcript(meeting_uuid: str, company_id: str, offset: int = 0) -> dict:
     """
     Download the raw VTT transcript for a meeting directly from S3.
 
@@ -181,11 +182,15 @@ def get_meeting_transcript(meeting_uuid: str, company_id: str) -> dict:
     The transcript is the raw Zoom caption file split into timed VTT segments.
 
     Reads part1.vtt and part2.vtt from S3 and concatenates them if both exist.
+    If the transcript exceeds the response size limit it is returned in chunks — call
+    again with offset=<next_offset> from the previous response to get the next chunk.
 
     Parameters
     ----------
     meeting_uuid : UUID of the meeting (from list_meetings).
     company_id   : Company identifier (used to construct the S3 key).
+    offset       : Character offset to start reading from (default 0). Use next_offset
+                   from a previous truncated response to page through long transcripts.
     """
     err = validate_company(company_id)
     if err:
@@ -207,8 +212,32 @@ def get_meeting_transcript(meeting_uuid: str, company_id: str) -> dict:
     if not parts:
         return {"message": f"No transcript found in S3 for meeting {meeting_uuid}."}
 
+    full_text = "\n\n".join(parts)
+    total_chars = len(full_text)
+    chunk = full_text[offset:]
+
+    # Trim chunk to fit within the response size limit (~900 KB encoded)
+    # Reserve ~200 bytes for the metadata fields
+    max_chars = MAX_RESPONSE_BYTES - 200
+    if len(chunk.encode("utf-8")) > max_chars:
+        # Cut at a safe char boundary
+        chunk = chunk.encode("utf-8")[:max_chars].decode("utf-8", errors="ignore")
+        next_offset = offset + len(chunk)
+        return {
+            "meeting_uuid": meeting_uuid,
+            "parts": len(parts),
+            "total_chars": total_chars,
+            "offset": offset,
+            "next_offset": next_offset,
+            "truncated": True,
+            "transcript": chunk,
+        }
+
     return {
         "meeting_uuid": meeting_uuid,
         "parts": len(parts),
-        "transcript": "\n\n".join(parts),
+        "total_chars": total_chars,
+        "offset": offset,
+        "truncated": False,
+        "transcript": chunk,
     }
