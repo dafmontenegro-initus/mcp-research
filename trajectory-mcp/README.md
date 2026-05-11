@@ -1,4 +1,4 @@
-# cerebro-mcp
+# trajectory-mcp
 
 Read-only MCP server for the Meetings and Wrike domains. Designed to power
 the Weekly Status Report (WSR) investigation flow through Claude Desktop or
@@ -70,13 +70,13 @@ In Claude Desktop you can run multiple named servers, one per company:
 ```json
 {
   "mcpServers": {
-    "cerebro-nwn": {
-      "command": "C:\\...\\cerebro-mcp\\.venv\\Scripts\\python.exe",
-      "args": ["C:\\...\\cerebro-mcp\\server.py", "--stdio", "--company", "NWN"]
+    "trajectory-nwn": {
+      "command": "C:\\...\\trajectory-mcp\\.venv\\Scripts\\python.exe",
+      "args": ["C:\\...\\trajectory-mcp\\server.py", "--stdio", "--company", "NWN"]
     },
-    "cerebro-dai": {
-      "command": "C:\\...\\cerebro-mcp\\.venv\\Scripts\\python.exe",
-      "args": ["C:\\...\\cerebro-mcp\\server.py", "--stdio", "--company", "DAI"]
+    "trajectory-dai": {
+      "command": "C:\\...\\trajectory-mcp\\.venv\\Scripts\\python.exe",
+      "args": ["C:\\...\\trajectory-mcp\\server.py", "--stdio", "--company", "DAI"]
     }
   }
 }
@@ -107,10 +107,10 @@ Add to `%LOCALAPPDATA%\Packages\Claude_pzs8sxrjxfjjc\LocalCache\Roaming\Claude\c
 ```json
 {
   "mcpServers": {
-    "cerebro-mcp": {
-      "command": "C:\\Users\\TJ-Daniel M\\Documents\\GitHub\\mcp-research\\cerebro-mcp\\.venv\\Scripts\\python.exe",
+    "trajectory-mcp": {
+      "command": "C:\\Users\\TJ-Daniel M\\Documents\\GitHub\\mcp-research\\trajectory-mcp\\.venv\\Scripts\\python.exe",
       "args": [
-        "C:\\Users\\TJ-Daniel M\\Documents\\GitHub\\mcp-research\\cerebro-mcp\\server.py",
+        "C:\\Users\\TJ-Daniel M\\Documents\\GitHub\\mcp-research\\trajectory-mcp\\server.py",
         "--stdio"
       ]
     }
@@ -123,19 +123,19 @@ For company-scoped versions (one server per company):
 ```json
 {
   "mcpServers": {
-    "cerebro-nwn": {
-      "command": "C:\\...\\cerebro-mcp\\.venv\\Scripts\\python.exe",
+    "trajectory-nwn": {
+      "command": "C:\\...\\trajectory-mcp\\.venv\\Scripts\\python.exe",
       "args": [
-        "C:\\...\\cerebro-mcp\\server.py",
+        "C:\\...\\trajectory-mcp\\server.py",
         "--stdio",
         "--company",
         "NWN"
       ]
     },
-    "cerebro-dai": {
-      "command": "C:\\...\\cerebro-mcp\\.venv\\Scripts\\python.exe",
+    "trajectory-dai": {
+      "command": "C:\\...\\trajectory-mcp\\.venv\\Scripts\\python.exe",
       "args": [
-        "C:\\...\\cerebro-mcp\\server.py",
+        "C:\\...\\trajectory-mcp\\server.py",
         "--stdio",
         "--company",
         "DAI"
@@ -171,10 +171,10 @@ After editing the config, **restart Claude Desktop** for changes to take effect.
 ## WSR system prompt (paste into a Claude Desktop project)
 
 Use this as the system prompt for a Claude Desktop project. Claude will orchestrate
-the MCP tool calls to replicate the full Cerebro WSR investigation flow.
+the MCP tool calls to run the full Trajectory WSR investigation flow.
 The server is read-only — the draft is presented as markdown only, no Wrike ticket is created.
 
-> **Required integrations:** cerebro-mcp (Wrike + Meetings).
+> **Required integrations:** trajectory-mcp (Wrike + Meetings).
 
 ```
 You are the Weekly Status Report (WSR) assistant for Trajectory. Your purpose is to generate
@@ -183,10 +183,10 @@ the BambooHR time-off feed. You never invent or infer data — every claim must 
 tool result or a source explicitly fetched in this session.
 
 TOOL ROLES — apply throughout:
-- cerebro-mcp: discovery only. Finds ticket IDs, lists tasks, meetings, time-off. Its ticket
+- trajectory-mcp: discovery only. Finds ticket IDs, lists tasks, meetings, time-off. Its ticket
   descriptions are plain text (no formatting) — never use them as structural templates.
 - Wrike connector (official integration): content layer. Use it to read the real formatted
-  description of any ticket located by cerebro-mcp, and to write the new WSR ticket.
+  description of any ticket located by trajectory-mcp, and to write the new WSR ticket.
 
 ---
 
@@ -210,13 +210,13 @@ Step 0 below.
 Use the confirmed company_id for all calls.
 
 ### Template / Reference Ticket
-Call `find_task` (cerebro-mcp) with query="WSR template" (or "status report template",
+Call `find_task` (trajectory-mcp) with query="WSR template" (or "status report template",
 "weekly status template"). Pick the ticket whose title most clearly indicates it is a structural
 template (no date in title). Store its ticket_id as TEMPLATE_ID.
 
 If TEMPLATE_ID is found: immediately call the Wrike connector to fetch the full formatted
 description of that ticket. Store this as TEMPLATE_CONTENT. This is the authoritative structure
-source — cerebro-mcp's plain-text version must NOT be used for structure.
+source — trajectory-mcp's plain-text version must NOT be used for structure.
 
 If none found: set TEMPLATE_ID=null and TEMPLATE_CONTENT=null. The WSR structure will be
 extracted from the baseline's formatted content instead (see Step 1).
@@ -292,7 +292,7 @@ Run all three sources. Triangulate — no single source is complete on its own.
 
 ### Source 1 — Prior week's status ticket (baseline / ground truth)
 Use BASELINE_CONTENT (fetched from the Wrike connector after user confirmation in Step 1).
-This is the formatted, authoritative version. Do NOT use cerebro-mcp's plain-text description
+This is the formatted, authoritative version. Do NOT use trajectory-mcp's plain-text description
 of this ticket. BASELINE_CONTENT is what was agreed or in progress as of cutoff_date.
 
 ### Source 2 — Wrike (comprehensive extraction)
@@ -332,7 +332,7 @@ STRUCTURE RULE (highest priority):
 - If TEMPLATE_CONTENT is set: extract the exact heading hierarchy from it.
 - If TEMPLATE_CONTENT is null: extract the heading hierarchy from BASELINE_CONTENT instead.
 Both are formatted content fetched via the Wrike connector — never derive structure from
-cerebro-mcp's plain-text descriptions.
+trajectory-mcp's plain-text descriptions.
 Replicate verbatim — every H1/H2/H3/H4/H5 in the same order.
 Do not add, remove, or rename any heading.
 
@@ -398,7 +398,7 @@ After presenting the markdown draft, ask: "Should I create this as a Wrike ticke
 Wait for explicit confirmation before creating anything.
 
 TICKET CREATION RULES (only after user confirms):
-- Use the Wrike connector (not cerebro-mcp — that server is read-only).
+- Use the Wrike connector (not trajectory-mcp — that server is read-only).
 - Create the ticket exclusively in TEST_FOLDER_ID (resolved in Step 0).
 - Never create a ticket in any other folder, even if a path from the baseline looks more natural.
 - Set the ticket title following the same naming pattern as the baseline (e.g. "WSR – May 11, 2026").

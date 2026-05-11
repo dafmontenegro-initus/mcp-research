@@ -1,18 +1,18 @@
-# cerebro-mcp — Technical Context Document
+# trajectory-mcp — Technical Context Document
 
-> **Purpose of this document**: Provide deep technical context about cerebro-mcp to an AI assistant so it can understand the server's architecture, tool surface, data model, and design decisions — and propose extensions or integrations. This document complements the README; it does not repeat it.
+> **Purpose of this document**: Provide deep technical context about trajectory-mcp to an AI assistant so it can understand the server's architecture, tool surface, data model, and design decisions — and propose extensions or integrations. This document complements the README; it does not repeat it.
 
 ---
 
 ## 1. Identity & Purpose
 
-**cerebro-mcp** is a read-only MCP (Model Context Protocol) server that exposes Cerebro's operational data — meetings and Wrike tasks — to AI assistants (Claude Desktop, MCP Inspector, etc.) without requiring any orchestration layer or LLM intermediary.
+**trajectory-mcp** is a read-only MCP (Model Context Protocol) server that exposes Trajectory's operational data — meetings and Wrike tasks — to AI assistants (Claude Desktop, MCP Inspector, etc.) without requiring any orchestration layer or LLM intermediary.
 
 **Who uses it**: Claude instances operating inside Claude Desktop or any MCP-compatible client. The primary documented use case is autonomous Weekly Status Report (WSR) generation.
 
 **What it is not**: It is not a reasoning system, not an orchestrator, and not a write path. It is a thin, secure query facade over two MySQL mirrors and an S3 bucket.
 
-**Relationship to Cerebro**: Cerebro (the Lambda orchestrator) is the parent system. cerebro-mcp exposes the same underlying data (meetings catalog, Wrike task mirror, S3 transcripts) but via the MCP protocol instead of a Lambda event interface. The two systems are independent — cerebro-mcp does not call Cerebro and does not share code with it.
+**Relationship to the parent orchestrator**: The Lambda orchestrator is the parent system. trajectory-mcp exposes the same underlying data (meetings catalog, Wrike task mirror, S3 transcripts) but via the MCP protocol instead of a Lambda event interface. The two systems are independent — trajectory-mcp does not call the orchestrator and does not share code with it.
 
 ---
 
@@ -121,7 +121,7 @@ Fetches full metadata + AI synthesis for a batch of known UUIDs.
 | `meeting_uuids` | list[str] | Up to 50 UUIDs |
 | `company_id` | str | Required |
 
-Returns all `list_meetings` fields plus: `synthesized_meeting` (Cerebro's AI-generated summary), `zoom_summary`, full `participants_emails` array.
+Returns all `list_meetings` fields plus: `synthesized_meeting` (AI-generated meeting summary), `zoom_summary`, full `participants_emails` array.
 
 **When to prefer this over transcripts**: When `has_synthesis=true`, this is faster and cheaper than fetching the raw VTT. Synthesis is already done; this call just reads it from the DB.
 
@@ -217,7 +217,7 @@ Returns: list of assignee name strings as they appear in the DB.
 
 ### 4.1 Meetings: `meetings_assets.meetings`
 
-Key columns used by cerebro-mcp:
+Key columns used by trajectory-mcp:
 
 | Column | Type | Notes |
 |--------|------|-------|
@@ -230,12 +230,12 @@ Key columns used by cerebro-mcp:
 | `duration` | int | Minutes |
 | `status` | varchar | `'inactive'` = soft-deleted |
 | `has_transcript` | tinyint | 1 if VTT exists in S3 |
-| `synthesized_meeting` | text | Cerebro AI summary (nullable) |
+| `synthesized_meeting` | text | AI-generated summary (nullable) |
 | `zoom_summary` | text | Zoom-native summary (nullable) |
 
 ### 4.2 Wrike: `wrike.{COMPANY}_FULL`
 
-Key columns used by cerebro-mcp:
+Key columns used by trajectory-mcp:
 
 | Column | Type | Notes |
 |--------|------|-------|
@@ -258,7 +258,7 @@ Key columns used by cerebro-mcp:
 
 Layout: `{DEV_S3_BUCKET}/{company_id}/meetings/transcripts/{meeting_uuid}/part1.vtt`
 
-Multi-part transcripts (long Zoom recordings split at 2-hour boundaries) use sequentially numbered parts. cerebro-mcp concatenates all parts automatically.
+Multi-part transcripts (long Zoom recordings split at 2-hour boundaries) use sequentially numbered parts. trajectory-mcp concatenates all parts automatically.
 
 ---
 
@@ -296,10 +296,10 @@ Hard limits prevent unbounded queries:
 
 ### 5.5 No Wrike API Token
 
-Unlike the parent Cerebro system, cerebro-mcp never calls the Wrike REST API. All Wrike data comes from the MySQL mirror. This means:
+trajectory-mcp never calls the Wrike REST API. All Wrike data comes from the MySQL mirror. This means:
 - No OAuth token management
 - No Wrike rate limits
-- No write capability (Wrike API is the only write path in Cerebro)
+- No write capability (Wrike API is the only write path in the parent orchestrator)
 
 ---
 
@@ -336,7 +336,7 @@ AWS_SECRET_ACCESS_KEY=...
 ```json
 {
   "mcpServers": {
-    "cerebro-mcp": {
+    "trajectory-mcp": {
       "command": "C:\\path\\to\\.venv\\Scripts\\python.exe",
       "args": ["C:\\path\\to\\server.py", "--stdio"]
     }
@@ -377,18 +377,18 @@ The README documents a complete Claude system prompt for WSR generation. The orc
    get_meeting_transcript(meeting_uuid)  [if has_synthesis=false]
    → Get meeting content
 
-6. Draft WSR markdown (NO ticket creation — cerebro-mcp is read-only)
+6. Draft WSR markdown (NO ticket creation — trajectory-mcp is read-only)
 ```
 
-**Why no RAG**: Unlike Cerebro's default flavor, WSR requires temporal completeness — all tasks/meetings in a date range, not the most semantically similar ones. SQL date filters are exact; RAG would miss in-scope items that don't match semantically.
+**Why no RAG**: WSR requires temporal completeness — all tasks/meetings in a date range, not the most semantically similar ones. SQL date filters are exact; RAG would miss in-scope items that don't match semantically.
 
-**Why cerebro-mcp instead of Cerebro for WSR**: An MCP-enabled Claude can run this workflow autonomously with full visibility into each step, no Lambda timeout constraints, and no need for the HITL survey protocol.
+**Why trajectory-mcp for WSR**: An MCP-enabled Claude can run this workflow autonomously with full visibility into each step, no Lambda timeout constraints, and no need for the HITL survey protocol.
 
 ---
 
-## 8. Comparison with Cerebro
+## 8. Comparison with the Parent Orchestrator
 
-| Aspect | Cerebro (Lambda) | cerebro-mcp |
+| Aspect | Lambda Orchestrator | trajectory-mcp |
 |--------|-----------------|-------------|
 | **Invocation** | Lambda event | MCP protocol call |
 | **Reasoning** | Internal LangGraph ReAct loops | External (calling AI assistant) |
@@ -411,7 +411,7 @@ All env vars use the `DEV_` prefix. There is no `prod` or `qa` variant — the s
 
 ### 9.2 No RAG Access
 
-Semantic search (the separate RAG Lambda in Cerebro) is not accessible from cerebro-mcp. Callers can only filter by exact SQL predicates (date, status, assignee, title LIKE). For WSR this is intentional (see Section 7), but for ad-hoc meeting discovery, RAG would improve recall.
+Semantic search (the separate RAG Lambda in the parent orchestrator) is not accessible from trajectory-mcp. Callers can only filter by exact SQL predicates (date, status, assignee, title LIKE). For WSR this is intentional (see Section 7), but for ad-hoc meeting discovery, RAG would improve recall.
 
 ### 9.3 Transcript Token Budget
 
@@ -423,7 +423,7 @@ Semantic search (the separate RAG Lambda in Cerebro) is not accessible from cere
 
 ### 9.5 No Structured Output Contract
 
-All tools return Python dicts/lists serialized to JSON. There are no typed response schemas published to MCP clients. Claude infers field types from example values. This is consistent with Cerebro's text-only tool output pattern (Section 9.9 of CEREBRO_TECHNICAL_CONTEXT.md) but means clients cannot validate response structure ahead of time.
+All tools return Python dicts/lists serialized to JSON. There are no typed response schemas published to MCP clients. Claude infers field types from example values. This means clients cannot validate response structure ahead of time.
 
 ### 9.6 Single Tenant Per Server Instance
 
@@ -446,4 +446,4 @@ One `.env` file means one set of DB credentials. To serve multiple environments 
 
 ---
 
-*Document generated: 2026-05-07. Reflects cerebro-mcp as of commit 764f82c.*
+*Document generated: 2026-05-07. Reflects trajectory-mcp as of commit 764f82c.*
