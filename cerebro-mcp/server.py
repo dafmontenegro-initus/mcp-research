@@ -1,9 +1,11 @@
 import sys
+import time
 
 import config
 from fastmcp import FastMCP
 from mcp.types import ToolAnnotations
 
+from tools.bamboohr import get_anniversaries, get_birthdays, get_company_holidays, get_time_off
 from tools.meetings import list_meetings, get_meeting_details, get_meeting_transcript
 from tools.wrike import find_task, list_tasks, get_task_details, get_wrike_users
 
@@ -62,14 +64,48 @@ def list_companies() -> dict:
     return {"mode": "multi-tenant", "companies": companies}
 
 
-mcp.tool(annotations=_read_only)(list_companies)
-mcp.tool(annotations=_read_only)(list_meetings)
-mcp.tool(annotations=_read_only)(get_meeting_details)
-mcp.tool(annotations=_read_only)(get_meeting_transcript)
-mcp.tool(annotations=_read_only)(find_task)
-mcp.tool(annotations=_read_only)(list_tasks)
-mcp.tool(annotations=_read_only)(get_task_details)
-mcp.tool(annotations=_read_only)(get_wrike_users)
+import functools
+import traceback
+
+
+def _logged(fn):
+    @functools.wraps(fn)
+    def wrapper(*args, **kwargs):
+        t0 = time.monotonic()
+        params = {**dict(zip(fn.__code__.co_varnames, args)), **kwargs}
+        print(f"[tool] {fn.__name__} called with {params}", file=sys.stderr, flush=True)
+        try:
+            result = fn(*args, **kwargs)
+        except Exception:
+            elapsed = (time.monotonic() - t0) * 1000
+            print(f"[tool] {fn.__name__} EXCEPTION ({elapsed:.0f}ms):", file=sys.stderr, flush=True)
+            traceback.print_exc(file=sys.stderr)
+            raise
+        elapsed = (time.monotonic() - t0) * 1000
+        if isinstance(result, dict) and "error" in result:
+            print(f"[tool] {fn.__name__} ERROR ({elapsed:.0f}ms): {result['error']}", file=sys.stderr, flush=True)
+        else:
+            print(f"[tool] {fn.__name__} OK ({elapsed:.0f}ms)", file=sys.stderr, flush=True)
+        return result
+    return wrapper
+
+
+def _register(fn):
+    mcp.tool(annotations=_read_only)(_logged(fn))
+
+
+_register(list_companies)
+_register(get_time_off)
+_register(get_birthdays)
+_register(get_anniversaries)
+_register(get_company_holidays)
+_register(list_meetings)
+_register(get_meeting_details)
+_register(get_meeting_transcript)
+_register(find_task)
+_register(list_tasks)
+_register(get_task_details)
+_register(get_wrike_users)
 
 if __name__ == "__main__":
     if config.SCOPED_COMPANY:
@@ -80,4 +116,9 @@ if __name__ == "__main__":
     if "--stdio" in sys.argv:
         mcp.run(transport="stdio")
     else:
-        mcp.run(transport="streamable-http", host="0.0.0.0", port=8001)
+        _port = 8080
+        if "--port" in sys.argv:
+            _pidx = sys.argv.index("--port")
+            if _pidx + 1 < len(sys.argv):
+                _port = int(sys.argv[_pidx + 1])
+        mcp.run(transport="streamable-http", host="0.0.0.0", port=_port)

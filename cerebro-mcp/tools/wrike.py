@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from pymysql.err import ProgrammingError
+
 from config import validate_company, wrike_table
 from db import get_wrike_conn
 from utils import fit_to_limit
@@ -74,6 +76,8 @@ def find_task(query: str, company_id: str, limit: int | None = None) -> dict:
         with conn.cursor() as cur:
             cur.execute(sql, params)
             rows = cur.fetchall()
+    except ProgrammingError:
+        return {"error": f"No Wrike data available for company {company_id.upper()}."}
     finally:
         conn.close()
 
@@ -186,6 +190,8 @@ def list_tasks(
         with conn.cursor() as cur:
             cur.execute(sql, params)
             rows = cur.fetchall()
+    except ProgrammingError:
+        return {"error": f"No Wrike data available for company {company_id.upper()}."}
     finally:
         conn.close()
 
@@ -231,6 +237,8 @@ def get_task_details(ticket_ids: list[str], company_id: str) -> dict:
         with conn.cursor() as cur:
             cur.execute(sql, ticket_ids)
             rows = cur.fetchall()
+    except ProgrammingError:
+        return {"error": f"No Wrike data available for company {company_id.upper()}."}
     finally:
         conn.close()
 
@@ -269,6 +277,8 @@ def get_wrike_users(company_id: str) -> dict:
         with conn.cursor() as cur:
             cur.execute(sql)
             rows = cur.fetchall()
+    except ProgrammingError:
+        return {"error": f"No Wrike data available for company {company_id.upper()}."}
     finally:
         conn.close()
 

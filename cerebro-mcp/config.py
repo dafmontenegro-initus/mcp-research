@@ -7,6 +7,10 @@ load_dotenv(Path(__file__).parent / ".env")
 
 AWS_REGION = os.getenv("AWS_REGION", "us-east-1")
 S3_BUCKET = os.getenv("S3_BUCKET", "")
+BAMBOOHR_TIMEOFF_URL = os.getenv("BAMBOOHR_TIMEOFF_URL", "")
+BAMBOOHR_BIRTHDAYS_URL = os.getenv("BAMBOOHR_BIRTHDAYS_URL", "")
+BAMBOOHR_ANNIVERSARIES_URL = os.getenv("BAMBOOHR_ANNIVERSARIES_URL", "")
+BAMBOOHR_HOLIDAYS_URL = os.getenv("BAMBOOHR_HOLIDAYS_URL", "")
 
 MEET_DB = {
     "host": os.getenv("MEET_DB_HOST"),
