@@ -57,14 +57,37 @@ def _parse_date(value: str) -> date:
     return datetime.strptime(value.strip()[:8], "%Y%m%d").date()
 
 
-def _filter_overlap(entries: list[dict], window_start: date, window_end: date) -> list[dict]:
+def _filter_overlap(
+    entries: list[dict],
+    window_start: date,
+    window_end: date,
+    year_agnostic: bool = False,
+) -> list[dict]:
     result = []
     for e in entries:
-        s, en = e.get("start"), e.get("end")
-        if not s or not en:
+        s = e.get("start")
+        if not s:
             continue
+        en = e.get("end") or s  # single-day events (birthdays, anniversaries) have no DTEND
+
+        if year_agnostic:
+            # Normalize event to the window's year (or next year if it wraps)
+            def _normalize(d: date) -> date:
+                for y in (window_start.year, window_start.year + 1):
+                    try:
+                        nd = d.replace(year=y)
+                    except ValueError:
+                        nd = d.replace(year=y, day=28)  # Feb 29 edge case
+                    if window_start <= nd <= window_end:
+                        return nd
+                return d.replace(year=window_start.year)
+
+            s = _normalize(s)
+            en = _normalize(en)
+
         if en < window_start or s > window_end:
             continue
+        e = {**e, "start": s, "end": en}
         result.append(e)
     return result
 
@@ -135,7 +158,7 @@ def get_birthdays(start: str | None = None, end: str | None = None) -> dict:
         return raw
 
     ws, we = _default_window(start, end)
-    entries = _filter_overlap(_parse_ical(raw), ws, we)
+    entries = _filter_overlap(_parse_ical(raw), ws, we, year_agnostic=True)
     entries.sort(key=lambda x: x["start"])
 
     return {
@@ -172,7 +195,7 @@ def get_anniversaries(start: str | None = None, end: str | None = None) -> dict:
         return raw
 
     ws, we = _default_window(start, end)
-    entries = _filter_overlap(_parse_ical(raw), ws, we)
+    entries = _filter_overlap(_parse_ical(raw), ws, we, year_agnostic=True)
     entries.sort(key=lambda x: x["start"])
 
     return {
