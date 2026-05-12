@@ -4,3 +4,4 @@ __pycache__/
 *.pyc
 *.pyo
 .pytest_cache/
+rag_service/chroma_data/

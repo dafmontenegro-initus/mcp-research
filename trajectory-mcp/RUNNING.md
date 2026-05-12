@@ -1,0 +1,161 @@
+# Running trajectory-mcp
+
+Two separate processes, two separate virtual environments.
+
+```
+trajectory-mcp/
+├── .venv/          ← MCP server venv  (pip install -r requirements.txt)
+├── server.py       ← starts on :8080 (HTTP) or stdio
+└── rag_service/
+    ├── .venv/      ← RAG service venv (pip install -r rag_service/requirements.txt)
+    └── app.py      ← starts on :8090
+```
+
+---
+
+## First-time setup
+
+### 1. Ollama model (do once on machine_20)
+```bash
+ollama pull qwen3-embedding:4b-q4_K_M
+```
+
+### 2. MCP server venv
+```bash
+cd ~/workspace/mcp-research/trajectory-mcp
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+```
+
+### 3. RAG service venv
+```bash
+cd ~/workspace/mcp-research/trajectory-mcp/rag_service
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt   # ~500 MB first time (sentence-transformers, chromadb)
+```
+
+### 4. Environment variables
+```bash
+# Already done — .env is in trajectory-mcp/.env
+# Verify with:
+python3 tests/test_connections.py
+```
+
+---
+
+## Running
+
+Open **two terminals** on machine_20 (or two tmux panes).
+
+### Terminal A — RAG service
+```bash
+cd ~/workspace/mcp-research/trajectory-mcp/rag_service
+source .venv/bin/activate
+python3 app.py
+# Listening on :8090
+# First search for a company will take a few seconds to load its S3 pickles
+```
+
+### Terminal B — MCP server
+```bash
+cd ~/workspace/mcp-research/trajectory-mcp
+source .venv/bin/activate
+python3 server.py                    # multi-tenant, HTTP :8080
+# or
+python3 server.py --company NWN      # scoped to one company, HTTP :8080
+# or
+python3 server.py --stdio            # for Claude Desktop / stdio transport
+```
+
+### Background (no-hangup)
+```bash
+# RAG service
+nohup bash -c "source rag_service/.venv/bin/activate && python3 rag_service/app.py" \
+  > rag_service.log 2>&1 &
+
+# MCP server
+nohup bash -c "source .venv/bin/activate && python3 server.py" \
+  > server.log 2>&1 &
+
+tail -f server.log rag_service.log   # watch both
+pkill -f "python3 server.py"         # stop MCP server
+pkill -f "python3 app.py"            # stop RAG service
+```
+
+---
+
+## Smoke tests
+
+```bash
+# All connections green?
+python3 tests/test_connections.py
+
+# RAG service health
+curl -s http://localhost:8090/health | python3 -m json.tool
+
+# Semantic search (loads NWN pickles on first run)
+curl -s -X POST http://localhost:8090/search/tasks \
+  -H "Content-Type: application/json" \
+  -d '{"query":"deployment risk","company_id":"NWN","top_k":5}' | python3 -m json.tool
+
+# Ingest a document from S3
+curl -s -X POST http://localhost:8090/ingest/document \
+  -H "Content-Type: application/json" \
+  -d '{"s3_key":"assets-tj-prod/wrike/NWN/TICKET_ID/TICKET_ID.pkl",
+       "company_id":"NWN","ticket_id":"TICKET_ID"}' | python3 -m json.tool
+
+# MCP Inspector (requires Node.js)
+npx @modelcontextprotocol/inspector http://localhost:8080/mcp
+```
+
+---
+
+## Claude Desktop config
+
+The MCP server runs persistently on machine_20 (port 8080). Claude Desktop connects via
+`mcp-remote`, which bridges HTTP → stdio. No SSH, no local Python required.
+
+**Config file location:**
+- Windows: `%LOCALAPPDATA%\Packages\Claude_pzs8sxrjxfjjc\LocalCache\Roaming\Claude\claude_desktop_config.json`
+- macOS: `~/Library/Application Support/Claude/claude_desktop_config.json`
+
+```json
+{
+  "mcpServers": {
+    "Trajectory": {
+      "command": "npx",
+      "args": ["-y", "mcp-remote", "http://64.137.145.121:8080/mcp", "--allow-http"]
+    }
+  }
+}
+```
+
+`--allow-http` is required because the server uses plain HTTP (not HTTPS).
+Requires Node.js installed on the client machine (`npx` must be available).
+
+After editing the config, restart Claude Desktop.
+
+---
+
+## Ports summary
+
+| Service | Port | Notes |
+|---------|------|-------|
+| MCP server | 8080 | HTTP streamable-http transport |
+| RAG service | 8090 | FastAPI, internal only |
+| Ollama | 11434 | Embedding model |
+
+---
+
+## Troubleshooting
+
+| Symptom | Fix |
+|---------|-----|
+| `search_tasks` returns `"RAG service unavailable"` | Start `rag_service/app.py` |
+| First search is slow (10–30s) | Normal — loading S3 pickles into ChromaDB for that company |
+| `ollama: false` in `/health` | Run `ollama pull qwen3-embedding:4b-q4_K_M` |
+| `reranker: false` in `/health` | Run `pip install sentence-transformers` in rag_service venv |
+| BambooHR 403 errors | BambooHR restricts by IP — needs access from office network or VPN |
+| `No Wrike data available for company X` | Company code not in Wrike DB — check `list_companies` |

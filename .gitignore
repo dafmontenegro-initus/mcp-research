@@ -1,8 +1,10 @@
-# Personal research notes — not for the repo
+# Personal scratch folders
 _notes/
-*_notes/
 _personal/
 _local/
+
+# research_notes/ is tracked (contains strategy docs and PDFs)
+
 
 # Common personal file patterns
 *_research.txt

@@ -6,8 +6,14 @@ from fastmcp import FastMCP
 from mcp.types import ToolAnnotations
 
 from tools.bamboohr import get_anniversaries, get_birthdays, get_company_holidays, get_time_off
-from tools.meetings import list_meetings, get_meeting_details, get_meeting_transcript
-from tools.wrike import find_task, list_tasks, get_task_details, get_wrike_users
+from tools.meetings import (
+    list_meetings, get_meeting_details, get_meeting_transcript,
+    search_meetings, get_meeting_participants, get_meeting_chat,
+)
+from tools.wrike import (
+    find_task, list_tasks, get_task_details, get_wrike_users,
+    search_tasks, get_task_attachment_content, ingest_document,
+)
 
 # Parse --company before FastMCP initializes so validate_company works at import time.
 _company_arg = None
@@ -19,7 +25,7 @@ if "--company" in sys.argv:
 config.SCOPED_COMPANY = _company_arg
 
 mcp = FastMCP(
-    "cerebro-mcp",
+    "Trajectory",
     instructions=(
         "Read-only MCP server for Meetings and Wrike data. "
         "Designed to power the Weekly Status Report (WSR) investigation flow. "
@@ -102,16 +108,22 @@ _register(get_company_holidays)
 _register(list_meetings)
 _register(get_meeting_details)
 _register(get_meeting_transcript)
+_register(search_meetings)
+_register(get_meeting_participants)
+_register(get_meeting_chat)
 _register(find_task)
 _register(list_tasks)
 _register(get_task_details)
 _register(get_wrike_users)
+_register(search_tasks)
+_register(get_task_attachment_content)
+_register(ingest_document)
 
 if __name__ == "__main__":
     if config.SCOPED_COMPANY:
-        print(f"[cerebro-mcp] started — scoped to company: {config.SCOPED_COMPANY}", file=sys.stderr)
+        print(f"[trajectory-mcp] started — scoped to company: {config.SCOPED_COMPANY}", file=sys.stderr)
     else:
-        print("[cerebro-mcp] started — multi-tenant mode", file=sys.stderr)
+        print("[trajectory-mcp] started — multi-tenant mode", file=sys.stderr)
 
     if "--stdio" in sys.argv:
         mcp.run(transport="stdio")

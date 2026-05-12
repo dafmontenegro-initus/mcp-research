@@ -19,7 +19,7 @@ def _fetch_ical(url: str) -> str | dict:
     try:
         req = urllib.request.Request(
             url,
-            headers={"User-Agent": "Mozilla/5.0 (compatible; cerebro-mcp/1.0)"},
+            headers={"User-Agent": "Mozilla/5.0 (compatible; trajectory-mcp/1.0)"},
         )
         ctx = ssl.create_default_context()
         with urllib.request.urlopen(req, timeout=10, context=ctx) as resp:

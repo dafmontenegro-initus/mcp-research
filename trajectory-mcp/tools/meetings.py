@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 import boto3
+import httpx
 from botocore.exceptions import ClientError
-from config import AWS_REGION, S3_BUCKET, validate_company
+from config import AWS_REGION, S3_BUCKET, RAG_SERVICE_URL, validate_company
 from db import get_meet_conn
 from utils import fit_to_limit, MAX_RESPONSE_BYTES
 
@@ -241,3 +242,144 @@ def get_meeting_transcript(meeting_uuid: str, company_id: str, offset: int = 0) 
         "truncated": False,
         "transcript": chunk,
     }
+
+
+def search_meetings(query: str, company_id: str, limit: int = 10) -> dict:
+    """
+    Semantic search over meeting transcripts and syntheses using the local RAG service.
+
+    Use this to find meetings related to a topic, decision, or keyword — even if the exact
+    words don't appear in the transcript. Returns results ordered by relevance (rank 1 = most
+    relevant). The rank order is the signal — do not treat rank numbers as absolute scores.
+
+    Complements list_meetings (date/host filters) for thematic discovery across the corpus.
+    Call this when you need to find meetings where a specific subject was discussed without
+    knowing which meeting or date to look in.
+
+    Parameters
+    ----------
+    query      : Natural language search query (e.g. "budget approval", "deployment risk").
+    company_id : Company identifier — results are isolated to this tenant.
+    limit      : Maximum results to return (default 10).
+    """
+    err = validate_company(company_id)
+    if err:
+        return {"error": err}
+
+    try:
+        r = httpx.post(
+            f"{RAG_SERVICE_URL}/search/meetings",
+            json={"query": query, "company_id": company_id.upper(), "top_k": limit},
+            timeout=30.0,
+        )
+        r.raise_for_status()
+        return r.json()
+    except httpx.ConnectError:
+        return {"message": "RAG service unavailable. Start rag_service/app.py first.", "results": []}
+    except Exception as e:
+        return {"error": f"RAG search failed: {e}", "results": []}
+
+
+def get_meeting_participants(meeting_uuid: str, company_id: str) -> dict:
+    """
+    Fetch the participant list for a meeting.
+
+    Returns the emails from meetings.participants_emails (JSON), marks which is host via
+    meetings.host_email, and includes the raw participant count from meetings_participants.
+
+    Parameters
+    ----------
+    meeting_uuid : UUID of the meeting (from list_meetings).
+    company_id   : Company identifier (used for tenant isolation).
+    """
+    import json as _json
+
+    err = validate_company(company_id)
+    if err:
+        return {"error": err}
+
+    sql = (
+        "SELECT m.participants_emails, m.host_email, "
+        "COUNT(mp.id) AS participant_count "
+        "FROM meetings_assets.meetings m "
+        "JOIN meetings_assets.meetings_projects proj ON proj.meeting_id = m.meeting_uuid "
+        "LEFT JOIN meetings_assets.meetings_participants mp ON mp.meeting_id = m.meeting_uuid "
+        "WHERE m.meeting_uuid = %s AND proj.project_id = %s "
+        "GROUP BY m.meeting_uuid, m.participants_emails, m.host_email"
+    )
+
+    conn = get_meet_conn()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(sql, [meeting_uuid, company_id.upper()])
+            row = cur.fetchone()
+    finally:
+        conn.close()
+
+    if not row:
+        return {"message": f"Meeting {meeting_uuid} not found for company {company_id}."}
+
+    emails_raw = row.get("participants_emails") or "[]"
+    try:
+        emails = _json.loads(emails_raw) if isinstance(emails_raw, str) else (emails_raw or [])
+    except Exception:
+        emails = []
+
+    host = row.get("host_email", "")
+    participants = [
+        {"email": e, "is_host": e == host}
+        for e in emails
+    ]
+
+    return {
+        "meeting_uuid": meeting_uuid,
+        "participants": participants,
+        "total": len(participants),
+        "participant_count_from_db": row.get("participant_count", 0),
+    }
+
+
+def get_meeting_chat(meeting_uuid: str, company_id: str) -> dict:
+    """
+    Retrieve the Zoom chat log for a meeting.
+
+    Chat messages often contain informal decisions, links, action items, and mentions that
+    don't appear in the spoken transcript. This is a fourth source of meeting information
+    alongside synthesized_meeting, zoom_summary, and the VTT transcript — treat it as
+    complementary, not a substitute.
+
+    Returns the raw chat text as stored by the daemon. May be empty if no chat was recorded
+    or if the meeting platform didn't export chat.
+
+    Parameters
+    ----------
+    meeting_uuid : UUID of the meeting (from list_meetings).
+    company_id   : Company identifier (used for tenant isolation).
+    """
+    err = validate_company(company_id)
+    if err:
+        return {"error": err}
+
+    sql = (
+        "SELECT m.chat "
+        "FROM meetings_assets.meetings m "
+        "JOIN meetings_assets.meetings_projects proj ON proj.meeting_id = m.meeting_uuid "
+        "WHERE m.meeting_uuid = %s AND proj.project_id = %s"
+    )
+
+    conn = get_meet_conn()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(sql, [meeting_uuid, company_id.upper()])
+            row = cur.fetchone()
+    finally:
+        conn.close()
+
+    if not row:
+        return {"message": f"Meeting {meeting_uuid} not found or not associated with {company_id}."}
+
+    chat = row.get("chat") or ""
+    if not chat.strip():
+        return {"meeting_uuid": meeting_uuid, "message": "No chat recorded for this meeting.", "chat": ""}
+
+    return {"meeting_uuid": meeting_uuid, "chat": chat}

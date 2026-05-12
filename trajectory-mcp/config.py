@@ -7,6 +7,8 @@ load_dotenv(Path(__file__).parent / ".env")
 
 AWS_REGION = os.getenv("AWS_REGION", "us-east-1")
 S3_BUCKET = os.getenv("S3_BUCKET", "")
+RAG_SERVICE_URL = os.getenv("RAG_SERVICE_URL", "http://localhost:8090")
+S3_WRIKE_BUCKET = os.getenv("S3_WRIKE_BUCKET", "")
 BAMBOOHR_TIMEOFF_URL = os.getenv("BAMBOOHR_TIMEOFF_URL", "")
 BAMBOOHR_BIRTHDAYS_URL = os.getenv("BAMBOOHR_BIRTHDAYS_URL", "")
 BAMBOOHR_ANNIVERSARIES_URL = os.getenv("BAMBOOHR_ANNIVERSARIES_URL", "")
@@ -37,7 +39,7 @@ _REQUIRED = {
 
 _missing = [k for k, v in _REQUIRED.items() if not v]
 if _missing:
-    print(f"[cerebro-mcp] ERROR: missing required env vars: {', '.join(_missing)}", file=sys.stderr)
+    print(f"[trajectory-mcp] ERROR: missing required env vars: {', '.join(_missing)}", file=sys.stderr)
     sys.exit(1)
 
 # Set by server.py at startup when --company flag is provided.

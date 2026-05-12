@@ -1,0 +1,6 @@
+# Exclude all personal notes and plans — only commit PDFs
+*.txt
+*.md
+
+# Allow PDFs explicitly
+!*.pdf

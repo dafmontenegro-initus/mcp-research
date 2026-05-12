@@ -1,0 +1,12 @@
+# Vector DB — can be gigabytes, re-generated from S3 on first query
+chroma_data/
+
+# Python
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+
+# env
+.env
