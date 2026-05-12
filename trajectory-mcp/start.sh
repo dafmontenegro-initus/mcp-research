@@ -1,41 +1,40 @@
 #!/usr/bin/env bash
-# Quick-start: launches RAG service + MCP server in two background processes.
-# Run from trajectory-mcp/  (bash start.sh)
-set -e
+# Launches RAG service + MCP server in named tmux sessions.
+# Safe to re-run — kills existing sessions first.
+# Usage: bash start.sh
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR"
 
+# ── Kill previous sessions if running ────────────────────────────────────────
+tmux kill-session -t rag 2>/dev/null && echo "[~] Killed previous 'rag' session"
+tmux kill-session -t mcp 2>/dev/null && echo "[~] Killed previous 'mcp' session"
+
 # ── RAG service ───────────────────────────────────────────────────────────────
 echo "[1/2] Starting RAG service (port 8090)..."
-nohup rag_service/.venv/bin/python3 rag_service/app.py \
-    > /tmp/rag_service.log 2>&1 &
-RAG_PID=$!
-echo "      PID $RAG_PID  →  logs: /tmp/rag_service.log"
+tmux new-session -d -s rag "cd $SCRIPT_DIR && rag_service/.venv/bin/python3 rag_service/app.py"
 
-# Give it a moment to bind the port
-sleep 2
+sleep 3
 if curl -s http://localhost:8090/health > /dev/null 2>&1; then
     echo "      ✓ RAG service up"
 else
-    echo "      ⚠ RAG service not responding yet — check /tmp/rag_service.log"
+    echo "      ⚠ RAG service not responding yet — check: tmux attach -t rag"
 fi
 
 # ── MCP server ────────────────────────────────────────────────────────────────
-echo "[2/2] Starting MCP server (port 8000)..."
-nohup .venv/bin/python3 server.py \
-    > /tmp/trajectory_mcp.log 2>&1 &
-MCP_PID=$!
-echo "      PID $MCP_PID  →  logs: /tmp/trajectory_mcp.log"
+echo "[2/2] Starting MCP server (port 8080)..."
+tmux new-session -d -s mcp "cd $SCRIPT_DIR && .venv/bin/python3 server.py"
 
-sleep 1
-if curl -s http://localhost:8000/health > /dev/null 2>&1; then
+sleep 2
+if curl -s http://localhost:8080/mcp > /dev/null 2>&1; then
     echo "      ✓ MCP server up"
 else
-    echo "      ⚠ MCP server not responding yet — check /tmp/trajectory_mcp.log"
+    echo "      ⚠ MCP server not responding yet — check: tmux attach -t mcp"
 fi
 
 echo ""
-echo "Both services started. Stop with:"
-echo "  kill $RAG_PID $MCP_PID"
-echo "  # or: pkill -f 'rag_service/app.py'; pkill -f 'server.py'"
+echo "Sessions running:"
+tmux ls
+echo ""
+echo "Logs:  tmux attach -t rag   |   tmux attach -t mcp"
+echo "Stop:  tmux kill-session -t rag; tmux kill-session -t mcp"

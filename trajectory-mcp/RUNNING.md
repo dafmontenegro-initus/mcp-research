@@ -69,19 +69,35 @@ python3 server.py --company NWN      # scoped to one company, HTTP :8080
 python3 server.py --stdio            # for Claude Desktop / stdio transport
 ```
 
-### Background (no-hangup)
+### tmux (recommended — survives disconnects, logs visible on re-attach)
 ```bash
-# RAG service
-nohup bash -c "source rag_service/.venv/bin/activate && python3 rag_service/app.py" \
-  > rag_service.log 2>&1 &
+# Start both services in detached sessions
+tmux new-session -d -s rag 'cd /home/daniel/workspace/mcp-research/trajectory-mcp && rag_service/.venv/bin/python3 rag_service/app.py'
+tmux new-session -d -s mcp 'cd /home/daniel/workspace/mcp-research/trajectory-mcp && .venv/bin/python3 server.py'
 
-# MCP server
-nohup bash -c "source .venv/bin/activate && python3 server.py" \
-  > server.log 2>&1 &
+# Check sessions are running
+tmux ls
 
-tail -f server.log rag_service.log   # watch both
-pkill -f "python3 server.py"         # stop MCP server
-pkill -f "python3 app.py"            # stop RAG service
+# Attach to see live logs (Ctrl+B then D to detach without killing)
+tmux attach -t rag
+tmux attach -t mcp
+
+# Stop
+tmux kill-session -t rag
+tmux kill-session -t mcp
+```
+
+> **Note:** if `tmux new-session` exits immediately, the port is likely already in use.
+> Check with `ss -tlnp | grep -E "8080|8090"` and kill the existing process first.
+
+### Background (nohup)
+```bash
+nohup rag_service/.venv/bin/python3 rag_service/app.py > /tmp/rag_service.log 2>&1 &
+nohup .venv/bin/python3 server.py > /tmp/trajectory_mcp.log 2>&1 &
+
+tail -f /tmp/rag_service.log /tmp/trajectory_mcp.log   # watch both
+pkill -f "rag_service/app.py"    # stop RAG service
+pkill -f "python3 server.py"     # stop MCP server
 ```
 
 ---
