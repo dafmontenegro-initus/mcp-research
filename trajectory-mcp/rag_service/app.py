@@ -47,12 +47,37 @@ class IngestDocumentRequest(BaseModel):
 
 # ── App ──────────────────────────────────────────────────────────────────────
 
+def _background_warmup():
+    """
+    Pre-warm ChromaDB for companies listed in WARMUP_COMPANIES (comma-separated).
+    Runs in a background thread at startup so the first query doesn't hit a cold S3 load.
+    """
+    companies_raw = os.getenv("WARMUP_COMPANIES", "")
+    if not companies_raw.strip():
+        return
+    companies = [c.strip().upper() for c in companies_raw.split(",") if c.strip()]
+    environment = os.getenv("WARMUP_ENVIRONMENT", "prod")
+    for company_id in companies:
+        for data_type in ("wrike", "meetings"):
+            print(f"[rag_service] warming {data_type} for {company_id}...")
+            try:
+                result = ensure_warm(company_id, data_type, environment)
+                loaded = result.get("keys_loaded", 0)
+                total = result.get("keys_found", 0)
+                print(f"[rag_service] {data_type}/{company_id}: {loaded}/{total} keys ingested")
+            except Exception as e:
+                print(f"[rag_service] warmup error {data_type}/{company_id}: {e}")
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    import threading
     print(f"[rag_service] v{RAG_SERVICE_VERSION} starting")
     print(f"[rag_service] Ollama available: {embedder.is_available()}")
     print(f"[rag_service] Reranker loading...")
     reranker.is_available()  # warm up on startup
+    warmup_thread = threading.Thread(target=_background_warmup, daemon=True)
+    warmup_thread.start()
     print(f"[rag_service] Ready")
     yield
 

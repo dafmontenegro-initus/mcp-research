@@ -326,7 +326,7 @@ def search_tasks(query: str, company_id: str, limit: int = 10) -> dict:
         r = httpx.post(
             f"{RAG_SERVICE_URL}/search/tasks",
             json={"query": query, "company_id": company_id.upper(), "top_k": limit},
-            timeout=30.0,
+            timeout=120.0,
         )
         r.raise_for_status()
         return r.json()

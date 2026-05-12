@@ -206,28 +206,31 @@ Identify the parent/folder ticket (WSR keyword in title, no date). Store as STAT
 Call `get_time_off`, `get_birthdays`, `get_anniversaries`, `get_company_holidays`
 all in the same turn. Store results as TIME_OFF_DATA.
 
-### Output Folder (auto-discover first, then confirm)
+### Output Folder — MANDATORY: always inside "Auto Status Notes"
 
-Run these `find_task` calls in the same parallel batch as the other Step 0 searches:
-- query="MCP Research Auto Reports"
-- query="MCP Research Reports"
-- query="Research Auto Reports"
-- query="Research Reports"
+**CRITICAL — absolute, non-negotiable rule:**
+The WSR ticket MUST ALWAYS be created inside **"Auto Status Notes"** (Wrike ID 4447143624).
+No exceptions. Never create the ticket in any other top-level folder, space, or project.
 
-Pick the best match: a folder/container ticket (no date in title, likely no status or
-status=Active) whose name most closely matches one of those patterns.
-Store as TEST_FOLDER_ID.
+Within "Auto Status Notes" there are exactly TWO valid targets. Ask the user which one to use
+(default to option A unless they specify otherwise):
 
-**If a match is found:** include in your Step 0 reply:
-"I'll create the draft ticket in **[folder name]** ([permalink]). Let me know if you'd
-like to use a different folder."
-This is informational only — do not wait for confirmation here.
-TEST_FOLDER_ID is locked to this folder unless the user explicitly redirects you to another.
+**Option A — subticket of "MCP Research Auto Reports - Ticket"**
+Wrike link: https://www.wrike.com/open.htm?id=4456157932
+The new WSR ticket becomes a direct child task of this ticket.
 
-**If no match is found:** ask the user once:
-"I couldn't find an output folder automatically. Please share the Wrike folder link or ID
-where I should create the ticket."
-Do not proceed to Step 1 until TEST_FOLDER_ID is set.
+**Option B — inside "MCP Research Auto Reports - Folder"**
+Wrike link: https://www.wrike.com/open.htm?id=4456475391
+The new WSR ticket is created inside this folder (also lives under "Auto Status Notes").
+
+In Step 0, call `find_task` with query="MCP Research Auto Reports" to resolve both IDs and
+store whichever the user prefers as TEST_FOLDER_ID.
+
+If both are found: present both options to the user in the Step 0 reply and wait for their
+choice before locking TEST_FOLDER_ID.
+
+If neither is found: STOP. Do not proceed to Step 1. Ask the user to provide the Wrike link
+for their preferred target.
 
 If TEMPLATE_ID or STATUS_PARENT_ID also cannot be resolved, include those requests in the
 same message rather than asking separately.
@@ -443,16 +446,19 @@ Never invent a link, UUID, date, or name.
 Respond in English regardless of source language.
 
 After presenting the draft, ask:
-"Should I create this as a Wrike ticket in **[TEST_FOLDER_NAME]**?"
-(Use the actual folder name discovered in Step 0, not the placeholder.)
+"Should I create this as a Wrike ticket in **[TEST_FOLDER_NAME]** (inside Auto Status Notes)?"
+(Use the actual target name locked in Step 0.)
 Wait for an explicit "yes" — or equivalent — before creating anything.
 
 TICKET CREATION RULES (only after user confirms "yes"):
 - Use the Wrike connector (not trajectory-mcp — that server is read-only).
-- Create the ticket exclusively in TEST_FOLDER_ID discovered in Step 0.
-- Never create in any other folder, even if a path from the baseline looks more natural.
-- If the user redirects to a different folder mid-session, update TEST_FOLDER_ID and
-  confirm the new target before proceeding.
+- Create the ticket EXCLUSIVELY inside TEST_FOLDER_ID, which is always one of:
+    • "MCP Research Auto Reports - Ticket" (ID 4456157932) — as a subticket, OR
+    • "MCP Research Auto Reports - Folder" (ID 4456475391) — inside this folder.
+  Both live under "Auto Status Notes" (ID 4447143624). Nothing outside this hierarchy is valid.
+- NEVER create the ticket directly under "Auto Status Notes" itself, under STATUS_PARENT_ID,
+  under the baseline's folder path, or anywhere else. The parent "Auto Status Notes" is a
+  boundary, not a target.
 - Title: follow the same naming pattern as the baseline (e.g. "WSR – May 11, 2026").
 - Description: the full markdown draft.
 ```
