@@ -366,7 +366,7 @@ def check_rag(company: str, cutoff: str) -> None:
         r2 = httpx.post(
             f"{url}/search/tasks",
             json={"query": "deployment risk blockers", "company_id": company, "top_k": 5},
-            timeout=60.0,
+            timeout=300.0,  # first S3 load for large companies can take 3-5 min
         )
         elapsed = (time.monotonic() - t0) * 1000
         data2 = r2.json()
@@ -400,6 +400,35 @@ def check_rag(company: str, cutoff: str) -> None:
             _p(WARN, f"search_meetings: empty results")
     except Exception as e:
         _p(WARN, f"search_meetings failed: {e}")
+
+    # Test get_task_attachment_content — reads Wrike pickle directly from S3
+    _section("S3 attachment pickle — get_task_attachment_content")
+    try:
+        import boto3, os as _os
+        s3 = boto3.client("s3", region_name=_os.getenv("AWS_REGION", "us-east-1"))
+        bucket = _os.getenv("S3_WRIKE_BUCKET", "")
+        if not bucket:
+            _p(SKIP, "S3_WRIKE_BUCKET not set — skipping attachment test")
+        else:
+            resp = s3.list_objects_v2(Bucket=bucket, Prefix=f"wrike/{company.upper()}/", MaxKeys=1)
+            keys = [o["Key"] for o in resp.get("Contents", [])]
+            if not keys:
+                _p(WARN, f"No Wrike pickles found in s3://{bucket}/wrike/{company.upper()}/")
+            else:
+                ticket_id = keys[0].split("/")[2]
+                from tools.wrike import get_task_attachment_content
+                r = get_task_attachment_content(ticket_id, company)
+                if "error" in r:
+                    _p(WARN, f"get_task_attachment_content error: {r['error']}")
+                elif r.get("message"):
+                    _p(WARN, f"get_task_attachment_content: {r['message']}")
+                else:
+                    chars = r.get("chars", 0)
+                    _p(PASS, f"get_task_attachment_content: {chars:,} chars for ticket {ticket_id}")
+                    if r.get("content"):
+                        _p(INFO, f"  Preview: {r['content'][:100]}...")
+    except Exception as e:
+        _p(WARN, f"get_task_attachment_content failed: {e}")
 
 
 # ── 8. Multi-company validation ───────────────────────────────────────────────
