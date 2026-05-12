@@ -141,8 +141,16 @@ TOOL ROLES — apply throughout:
 - trajectory-mcp: investigation only. Finds ticket IDs, lists tasks, meetings, time-off,
   and runs semantic search. Its ticket descriptions are plain text — never use them as
   structural templates.
-- Wrike connector (official integration): content layer. Use it to read the formatted
-  description of any ticket located by trajectory-mcp, and to create the new WSR ticket.
+- Wrike connector (official integration): content layer. Specific tools:
+  - `wrike_get_tasks` — read the full formatted description of a ticket (BASELINE_CONTENT,
+    TEMPLATE_CONTENT). Pass the ticket ID(s) returned by trajectory-mcp.
+  - `wrike_get_task_comments` — read comments on a specific ticket if needed.
+  - `wrike_search_tasks` — search tasks by keyword/filter when needed (supplement to trajectory-mcp).
+  - `wrike_search_folder_project` — search folders and projects.
+  - `wrike_get_folder_project` — retrieve a folder or project by ID.
+  - `wrike_create_task` — create the WSR ticket. Always pass `parentId` as the numeric ID of
+    the target folder. Numeric IDs work directly — no conversion needed.
+  Never use trajectory-mcp tools to write or create anything — that server is read-only.
 
 ---
 
@@ -195,7 +203,7 @@ Call `find_task` with query="WSR template" (also try "status report template", "
 template"). Pick the ticket whose title indicates it is a structural template (no date).
 Store as TEMPLATE_ID.
 
-If found: call the Wrike connector to fetch its full formatted description → TEMPLATE_CONTENT.
+If found: call `wrike_get_tasks` with TEMPLATE_ID to fetch its full formatted description → TEMPLATE_CONTENT.
 If not found: TEMPLATE_ID=null, TEMPLATE_CONTENT=null (structure comes from baseline in Step 1).
 
 ### Status Call Parent
@@ -203,8 +211,8 @@ Call `find_task` with query="status call" (also try "weekly status", "status rep
 Identify the parent/folder ticket (WSR keyword in title, no date). Store as STATUS_PARENT_ID.
 
 ### Time-Off (BambooHR) — run in this same parallel batch
-Call `get_time_off`, `get_birthdays`, `get_anniversaries`, `get_company_holidays`
-all in the same turn. Store results as TIME_OFF_DATA.
+Call `get_time_off` and `get_company_holidays` in the same turn. Store results as TIME_OFF_DATA.
+Do NOT call `get_birthdays` or `get_anniversaries` — those sections are not part of the WSR.
 
 ### Output Folder — MANDATORY: always inside "Auto Status Notes"
 
@@ -223,14 +231,14 @@ The new WSR ticket becomes a direct child task of this ticket.
 Wrike link: https://www.wrike.com/open.htm?id=4456475391
 The new WSR ticket is created inside this folder (also lives under "Auto Status Notes").
 
-In Step 0, call `find_task` with query="MCP Research Auto Reports" to resolve both IDs and
-store whichever the user prefers as TEST_FOLDER_ID.
+The IDs are already known — no search needed. In Step 0, call `wrike_get_folder_project` with
+both IDs (4456157932 and 4456475391) in the same parallel batch to confirm they are accessible.
 
-If both are found: present both options to the user in the Step 0 reply and wait for their
-choice before locking TEST_FOLDER_ID.
+Present both options to the user in the Step 0 reply and wait for their choice before locking
+TEST_FOLDER_ID. Once the user picks, store their choice as TEST_FOLDER_ID (numeric ID).
 
-If neither is found: STOP. Do not proceed to Step 1. Ask the user to provide the Wrike link
-for their preferred target.
+If `wrike_get_folder_project` returns an error for both IDs: STOP. Do not proceed to Step 1.
+Ask the user to confirm the correct target folder.
 
 If TEMPLATE_ID or STATUS_PARENT_ID also cannot be resolved, include those requests in the
 same message rather than asking separately.
@@ -276,8 +284,8 @@ Output one confirmation:
 Do NOT proceed until the user confirms.
 
 USER REPLY HANDLING:
-- Positive ("yes", "correct", "dale", "sí"): call the Wrike connector to fetch the full
-  formatted description → BASELINE_CONTENT. Proceed to Step 2.
+- Positive ("yes", "correct", "dale", "sí"): call `wrike_get_tasks` with the baseline ticket ID
+  to fetch its full formatted description → BASELINE_CONTENT. Proceed to Step 2.
 - Rejection with date hint: re-run targeting that date. Output a new confirmation.
 - Ambiguous rejection ("no", "wrong"): ask "Which date should I use?" before re-running.
 
@@ -414,7 +422,10 @@ If so, incorporate the decision or action item and cite the meeting date.
 TIME OFF SECTION:
 - Carry forward all entries from BASELINE_CONTENT whose end date has not yet passed.
 - Remove expired entries.
-- Add new entries from TIME_OFF_DATA (BambooHR) not already listed.
+- Add new entries from TIME_OFF_DATA (BambooHR) ONLY for people who appear in the project:
+  defined as anyone who is a responsible on a project ticket OR a participant in a project meeting.
+  Do NOT include company-wide OOO entries for people unrelated to this project.
+- Do NOT add a "Birthday" or "Anniversary" subsection — those do not belong in the WSR.
 - Flag section for PM review.
 
 TJ / MANAGED SERVICES (Section 1.2 and any TJ-tagged items):
@@ -451,14 +462,13 @@ After presenting the draft, ask:
 Wait for an explicit "yes" — or equivalent — before creating anything.
 
 TICKET CREATION RULES (only after user confirms "yes"):
-- Use the Wrike connector (not trajectory-mcp — that server is read-only).
-- Create the ticket EXCLUSIVELY inside TEST_FOLDER_ID, which is always one of:
-    • "MCP Research Auto Reports - Ticket" (ID 4456157932) — as a subticket, OR
-    • "MCP Research Auto Reports - Folder" (ID 4456475391) — inside this folder.
+- Use `wrike_create_task` from the Wrike connector (not trajectory-mcp — that server is read-only).
+- Set `parentId` = TEST_FOLDER_ID (the numeric ID chosen by the user in Step 0). Valid values:
+    • 4456157932 — "MCP Research Auto Reports - Ticket" (creates as subticket), OR
+    • 4456475391 — "MCP Research Auto Reports - Folder" (creates inside this folder).
   Both live under "Auto Status Notes" (ID 4447143624). Nothing outside this hierarchy is valid.
-- NEVER create the ticket directly under "Auto Status Notes" itself, under STATUS_PARENT_ID,
-  under the baseline's folder path, or anywhere else. The parent "Auto Status Notes" is a
-  boundary, not a target.
+- NEVER pass any other ID as parentId — not "Auto Status Notes" itself (4447143624), not
+  STATUS_PARENT_ID, not the baseline's folder, not any folder from the baseline's `paths`.
 - Title: follow the same naming pattern as the baseline (e.g. "WSR – May 11, 2026").
 - Description: the full markdown draft.
 ```
