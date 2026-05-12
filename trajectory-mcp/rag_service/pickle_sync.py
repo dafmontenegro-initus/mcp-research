@@ -161,6 +161,14 @@ def _get_company_meeting_uuids(company_id: str) -> list[str]:
         return []
 
 
+_NOT_FOUND_TTL_SECONDS = 86400  # re-check 404s once per day
+
+
+def _is_404(exc: Exception) -> bool:
+    msg = str(exc)
+    return "404" in msg or "Not Found" in msg or "NoSuchKey" in msg
+
+
 def _ingest_key(
     s3,
     bucket: str,
@@ -171,17 +179,25 @@ def _ingest_key(
     company_id: str = "",
 ) -> None:
     """Download one pickle, parse it, upsert into ChromaDB, update manifest."""
+    manifest_key = f"{bucket}/{key}"
     try:
         obj_meta = s3.head_object(Bucket=bucket, Key=key)
         s3_modified = _s3_iso(obj_meta)
 
-        cached = manifest.get(f"{bucket}/{key}")
+        cached = manifest.get(manifest_key)
         if cached and cached.get("s3_last_modified") == s3_modified:
             return  # still fresh
 
         raw = s3.get_object(Bucket=bucket, Key=key)["Body"].read()
     except Exception as e:
-        print(f"[pickle_sync] skip {bucket}/{key}: {e}")
+        if _is_404(e):
+            # Cache the 404 so we don't retry every warm-up cycle
+            manifest[manifest_key] = {
+                "not_found": True,
+                "checked_at": datetime.now(timezone.utc).isoformat(),
+            }
+        else:
+            print(f"[pickle_sync] error {bucket}/{key}: {e}")
         return
 
     if data_type == "wrike":
@@ -243,16 +259,31 @@ def ensure_warm(company_id: str, data_type: str, environment: str = "prod") -> d
         return {"status": "empty", "bucket": bucket, "prefix": prefix, "keys_found": 0}
 
     loaded = 0
+    skipped_404 = 0
     for key in keys:
-        cached = manifest.get(f"{bucket}/{key}")
+        manifest_key = f"{bucket}/{key}"
+        cached = manifest.get(manifest_key)
         if cached:
-            try:
-                obj_meta = s3.head_object(Bucket=bucket, Key=key)
-                s3_modified = _s3_iso(obj_meta)
-                if cached.get("s3_last_modified") == s3_modified:
-                    continue  # still fresh, skip
-            except Exception:
-                pass  # if head fails, re-ingest to be safe
+            # Skip recently confirmed 404s
+            if cached.get("not_found"):
+                checked_at = cached.get("checked_at", "")
+                if checked_at:
+                    try:
+                        age = (datetime.now(timezone.utc) - datetime.fromisoformat(checked_at)).total_seconds()
+                        if age < _NOT_FOUND_TTL_SECONDS:
+                            skipped_404 += 1
+                            continue
+                    except Exception:
+                        pass
+            else:
+                # Has a real entry — check if S3 version changed
+                try:
+                    obj_meta = s3.head_object(Bucket=bucket, Key=key)
+                    s3_modified = _s3_iso(obj_meta)
+                    if cached.get("s3_last_modified") == s3_modified:
+                        continue  # still fresh, skip
+                except Exception:
+                    pass  # if head fails, re-ingest to be safe
 
         _ingest_key(s3, bucket, key, collection, data_type, manifest, company_id)
         loaded += 1
@@ -264,4 +295,5 @@ def ensure_warm(company_id: str, data_type: str, environment: str = "prod") -> d
         "prefix": prefix or f"(DB-resolved UUIDs for {company_id})",
         "keys_found": len(keys),
         "keys_loaded": loaded,
+        "keys_skipped_404": skipped_404,
     }
