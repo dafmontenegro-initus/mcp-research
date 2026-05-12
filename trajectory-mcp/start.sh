@@ -14,12 +14,18 @@ tmux kill-session -t mcp 2>/dev/null && echo "[~] Killed previous 'mcp' session"
 echo "[1/2] Starting RAG service (port 8090)..."
 tmux new-session -d -s rag "cd $SCRIPT_DIR && rag_service/.venv/bin/python3 rag_service/app.py"
 
-sleep 6
-if curl -s http://localhost:8090/health > /dev/null 2>&1; then
-    echo "      ✓ RAG service up"
-else
-    echo "      ⚠ RAG service not responding yet — check: tmux attach -t rag"
-fi
+echo -n "      waiting"
+for i in $(seq 1 30); do
+    sleep 2
+    if curl -s http://localhost:8090/health > /dev/null 2>&1; then
+        echo " ✓ RAG service up (${i}0s)"
+        break
+    fi
+    echo -n "."
+    if [ "$i" -eq 30 ]; then
+        echo " ⚠ RAG service not responding — check: tmux attach -t rag"
+    fi
+done
 
 # ── MCP server ────────────────────────────────────────────────────────────────
 echo "[2/2] Starting MCP server (port 8080)..."
