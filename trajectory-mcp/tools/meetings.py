@@ -3,9 +3,11 @@ from __future__ import annotations
 import boto3
 import httpx
 from botocore.exceptions import ClientError
-from config import AWS_REGION, S3_BUCKET, RAG_SERVICE_URL, validate_company
+from config import AWS_REGION, S3_BUCKET, RAG_SERVICE_URL, OLLAMA_BASE_URL, OLLAMA_SUMMARIZE_MODEL, validate_company
 from db import get_meet_conn
 from utils import fit_to_limit, MAX_RESPONSE_BYTES
+
+_MAX_TRANSCRIPT_CHARS = 120_000  # ~30K tokens — safe for 32K+ context models
 
 _s3 = boto3.client("s3", region_name=AWS_REGION)
 
@@ -383,3 +385,210 @@ def get_meeting_chat(meeting_uuid: str, company_id: str) -> dict:
         return {"meeting_uuid": meeting_uuid, "message": "No chat recorded for this meeting.", "chat": ""}
 
     return {"meeting_uuid": meeting_uuid, "chat": chat}
+
+
+def summarize_transcript_for_ticket(
+    meeting_uuid: str,
+    ticket_title: str,
+    company_id: str,
+) -> dict:
+    """
+    Extract the parts of a meeting transcript relevant to a specific Wrike ticket.
+
+    Uses a local Ollama LLM (model configured via OLLAMA_SUMMARIZE_MODEL) to read the
+    full VTT transcript and return only what was said about the given ticket — decisions,
+    action items, risks, blockers, status updates. Runs entirely on machine_20 with no
+    external API calls.
+
+    Fallback: if Ollama is unavailable or the model is not pulled, returns the raw
+    transcript text so the caller can filter manually. The `source` field in the response
+    indicates whether the result is an LLM summary ("ollama") or the raw transcript
+    ("raw_transcript").
+
+    Prefer this over get_meeting_transcript for per-ticket investigation — it drastically
+    reduces token consumption when you only care about one ticket per call.
+
+    Parameters
+    ----------
+    meeting_uuid  : UUID of the meeting (from list_meetings).
+    ticket_title  : Title of the Wrike ticket to focus on (e.g. "Deploy new API v2").
+    company_id    : Company identifier (used for tenant isolation and S3 path).
+    """
+    err = validate_company(company_id)
+    if err:
+        return {"error": err}
+    if not S3_BUCKET:
+        return {"message": "S3_BUCKET is not configured."}
+
+    # Load transcript from S3
+    parts = []
+    for part_name in ("part1.vtt", "part2.vtt"):
+        key = f"{company_id.upper()}/meetings/transcripts/{meeting_uuid}/{part_name}"
+        try:
+            obj = _s3.get_object(Bucket=S3_BUCKET, Key=key)
+            parts.append(obj["Body"].read().decode("utf-8", errors="replace"))
+        except ClientError as e:
+            if e.response["Error"]["Code"] in ("NoSuchKey", "404"):
+                break
+            break
+
+    if not parts:
+        return {"message": f"No transcript found in S3 for meeting {meeting_uuid}."}
+
+    full_transcript = "\n\n".join(parts)
+    transcript_for_llm = full_transcript[:_MAX_TRANSCRIPT_CHARS]
+    was_truncated = len(full_transcript) > _MAX_TRANSCRIPT_CHARS
+
+    # Try Ollama
+    try:
+        r = httpx.post(
+            f"{OLLAMA_BASE_URL}/api/chat",
+            json={
+                "model": OLLAMA_SUMMARIZE_MODEL,
+                "messages": [
+                    {
+                        "role": "system",
+                        "content": (
+                            "You are a focused extraction assistant. Given a meeting transcript "
+                            "and a Wrike ticket name, extract ONLY what was said about that ticket. "
+                            "Be brief and factual — 2 to 5 sentences. If the ticket is not "
+                            "mentioned or discussed, say so in one sentence."
+                        ),
+                    },
+                    {
+                        "role": "user",
+                        "content": (
+                            f"Meeting transcript:\n\n{transcript_for_llm}\n\n---\n\n"
+                            f"Extract and summarize ONLY the parts directly relevant to the "
+                            f"Wrike ticket: \"{ticket_title}\".\n"
+                            f"Include: decisions, action items, risks, blockers, status updates."
+                        ),
+                    },
+                ],
+                "stream": False,
+                "think": False,
+                "options": {"num_ctx": 65536},
+            },
+            timeout=120.0,
+        )
+        r.raise_for_status()
+        summary = r.json().get("message", {}).get("content", "").strip()
+        if summary:
+            return {
+                "meeting_uuid": meeting_uuid,
+                "ticket_title": ticket_title,
+                "model": OLLAMA_SUMMARIZE_MODEL,
+                "summary": summary,
+                "transcript_truncated": was_truncated,
+                "source": "ollama",
+            }
+    except Exception:
+        pass  # Ollama unavailable or model not pulled — fall through to raw transcript
+
+    # Fallback: return raw transcript capped to response limit
+    max_chars = MAX_RESPONSE_BYTES - 300
+    chunk = full_transcript
+    truncated_response = False
+    if len(chunk.encode("utf-8")) > max_chars:
+        chunk = chunk.encode("utf-8")[:max_chars].decode("utf-8", errors="ignore")
+        truncated_response = True
+
+    return {
+        "meeting_uuid": meeting_uuid,
+        "ticket_title": ticket_title,
+        "source": "raw_transcript",
+        "message": (
+            f"Ollama unavailable (model: {OLLAMA_SUMMARIZE_MODEL}). "
+            "Run `ollama pull` with the configured model to enable LLM summarization. "
+            "Raw transcript returned — filter manually."
+        ),
+        "truncated": truncated_response,
+        "transcript": chunk,
+    }
+
+
+def get_meeting_ticket_links(
+    meeting_uuid: str,
+    company_id: str,
+    limit: int = 10,
+) -> dict:
+    """
+    Find Wrike tickets that are semantically related to a meeting.
+
+    Uses the meeting's AI synthesis and Zoom summary as a search query against the
+    local RAG index of Wrike tasks. Returns the most relevant tickets ranked by
+    semantic similarity — no manual query required.
+
+    Use this to answer: "Which tickets should I update based on what was discussed
+    in this meeting?" without having to read the full transcript or formulate queries
+    yourself. Complements get_meeting_details by bridging from meeting content to
+    actionable ticket IDs.
+
+    Returns the same structure as search_tasks (rank, ticket_id, title, status, excerpt).
+
+    Parameters
+    ----------
+    meeting_uuid : UUID of the meeting (from list_meetings).
+    company_id   : Company identifier — results are isolated to this tenant.
+    limit        : Maximum ticket results to return (default 10).
+    """
+    err = validate_company(company_id)
+    if err:
+        return {"error": err}
+
+    # Fetch meeting content to build the search query
+    placeholders = "%s"
+    sql = (
+        "SELECT m.meeting_title, m.synthesized_meeting, m.zoom_summary "
+        "FROM meetings_assets.meetings m "
+        "JOIN meetings_assets.meetings_projects proj ON proj.meeting_id = m.meeting_uuid "
+        f"WHERE m.meeting_uuid = {placeholders} AND proj.project_id = %s"
+    )
+
+    conn = get_meet_conn()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(sql, [meeting_uuid, company_id.upper()])
+            row = cur.fetchone()
+    finally:
+        conn.close()
+
+    if not row:
+        return {"message": f"Meeting {meeting_uuid} not found for company {company_id}."}
+
+    # Build a rich query from whatever content is available
+    parts = []
+    if row.get("meeting_title"):
+        parts.append(row["meeting_title"])
+    if row.get("synthesized_meeting"):
+        parts.append((row["synthesized_meeting"] or "")[:2000])
+    if row.get("zoom_summary"):
+        parts.append((row["zoom_summary"] or "")[:1000])
+
+    if not parts:
+        return {
+            "meeting_uuid": meeting_uuid,
+            "message": "Meeting has no synthesis or summary — cannot build a search query. "
+                       "Use search_tasks with a manual topic query instead.",
+            "results": [],
+        }
+
+    query = "\n\n".join(parts)
+
+    try:
+        r = httpx.post(
+            f"{RAG_SERVICE_URL}/search/tasks",
+            json={"query": query, "company_id": company_id.upper(), "top_k": limit},
+            timeout=30.0,
+        )
+        r.raise_for_status()
+        result = r.json()
+        result["meeting_uuid"] = meeting_uuid
+        return result
+    except httpx.ConnectError:
+        return {
+            "message": "RAG service unavailable. Start rag_service/app.py first.",
+            "results": [],
+        }
+    except Exception as e:
+        return {"error": f"RAG search failed: {e}", "results": []}

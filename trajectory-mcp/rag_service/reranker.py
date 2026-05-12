@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 _model = None
-MODEL_NAME = "cross-encoder/ms-marco-MiniLM-L-6-v2"
+MODEL_NAME = "BAAI/bge-reranker-v2-m3"
 
 
 def _get_model():

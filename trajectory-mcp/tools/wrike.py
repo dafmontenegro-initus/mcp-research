@@ -9,7 +9,7 @@ import httpx
 from pymysql.err import ProgrammingError
 
 from config import AWS_REGION, RAG_SERVICE_URL, S3_WRIKE_BUCKET, validate_company, wrike_table
-from db import get_wrike_conn
+from db import get_meet_conn, get_wrike_conn
 from utils import fit_to_limit
 
 _DATE_FIELDS = ("due_date", "start_date", "created_date", "updated_date")
@@ -388,6 +388,120 @@ def get_task_attachment_content(ticket_id: str, company_id: str) -> dict:
         return {"ticket_id": ticket_id, "message": "Attachment pickle is empty.", "content": ""}
 
     return {"ticket_id": ticket_id, "chars": len(content), "content": content}
+
+
+def get_project_timeline(
+    company_id: str,
+    start_date: str,
+    end_date: str,
+) -> dict:
+    """
+    Return a unified chronological timeline of meetings and Wrike ticket updates.
+
+    Merges two event streams and sorts them by date, giving a single feed that
+    makes temporal reasoning (Principle 0) easy — no cross-referencing required.
+
+    Event types:
+    - "meeting"       : a meeting that occurred in the period (UUID, title, host)
+    - "ticket_update" : a Wrike ticket whose updated_date falls in the period
+                        (ticket_id, title, status, responsible, permalink)
+
+    Use this as a complement to the 5-pass list_tasks pattern: where list_tasks tells
+    you what changed, get_project_timeline tells you WHEN and in what order relative
+    to meetings. Particularly useful for finding contradictions (a meeting after a
+    ticket update that contradicts it) and gaps (meeting decisions with no follow-up
+    ticket).
+
+    Parameters
+    ----------
+    company_id : Company identifier (e.g. "NWN").
+    start_date : ISO date "YYYY-MM-DD" — inclusive lower bound.
+    end_date   : ISO date "YYYY-MM-DD" — exclusive upper bound.
+    """
+    err = validate_company(company_id)
+    if err:
+        return {"error": err}
+
+    meet_events: list[dict] = []
+    wk_events: list[dict] = []
+
+    # ── Meetings ──────────────────────────────────────────────────────────────
+    conn = get_meet_conn()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT m.meeting_uuid, m.meeting_title, m.start_time, m.host_email, "
+                "m.duration, m.has_transcript, "
+                "IF(m.synthesized_meeting IS NOT NULL AND m.synthesized_meeting != '', 1, 0) AS has_synthesis "
+                "FROM meetings_assets.meetings m "
+                "JOIN meetings_assets.meetings_projects proj ON proj.meeting_id = m.meeting_uuid "
+                "WHERE proj.project_id = %s AND m.status != 'inactive' "
+                "AND m.start_time >= %s AND m.start_time < %s "
+                "ORDER BY m.start_time ASC",
+                [company_id.upper(), start_date, end_date],
+            )
+            rows = cur.fetchall()
+    finally:
+        conn.close()
+
+    for r in rows:
+        meet_events.append({
+            "event_date": str(r["start_time"]),
+            "event_type": "meeting",
+            "id": r["meeting_uuid"],
+            "title": r["meeting_title"],
+            "host_email": r.get("host_email") or "",
+            "duration_min": r.get("duration"),
+            "has_synthesis": bool(r.get("has_synthesis")),
+            "has_transcript": bool(r.get("has_transcript")),
+        })
+
+    # ── Wrike ticket updates ──────────────────────────────────────────────────
+    table = wrike_table(company_id)
+    conn = get_wrike_conn()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                f"SELECT ticket_id, title, status, custom_status, responsible, "
+                f"created_date, updated_date, due_date, permalink "
+                f"FROM {table} "
+                f"WHERE updated_date >= %s AND updated_date < %s "
+                f"ORDER BY updated_date ASC",
+                [start_date, end_date],
+            )
+            rows = cur.fetchall()
+    except ProgrammingError:
+        return {"error": f"No Wrike data available for company {company_id.upper()}."}
+    finally:
+        conn.close()
+
+    for r in rows:
+        wk_events.append({
+            "event_date": str(r["updated_date"]) if r.get("updated_date") else "unknown",
+            "event_type": "ticket_update",
+            "id": r["ticket_id"],
+            "title": r["title"],
+            "status": r.get("status") or "",
+            "custom_status": r.get("custom_status") or "",
+            "responsible": r.get("responsible") or "",
+            "permalink": r.get("permalink") or "",
+            "created_date": str(r["created_date"]) if r.get("created_date") else None,
+            "due_date": str(r["due_date"]) if r.get("due_date") else None,
+        })
+
+    all_events = sorted(meet_events + wk_events, key=lambda e: e["event_date"])
+
+    return fit_to_limit(
+        all_events,
+        "events",
+        {
+            "total": len(all_events),
+            "meetings": len(meet_events),
+            "ticket_updates": len(wk_events),
+            "start_date": start_date,
+            "end_date": end_date,
+        },
+    )
 
 
 def ingest_document(s3_key: str, company_id: str, ticket_id: str) -> dict:

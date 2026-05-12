@@ -9,10 +9,12 @@ from tools.bamboohr import get_anniversaries, get_birthdays, get_company_holiday
 from tools.meetings import (
     list_meetings, get_meeting_details, get_meeting_transcript,
     search_meetings, get_meeting_participants, get_meeting_chat,
+    summarize_transcript_for_ticket, get_meeting_ticket_links,
 )
 from tools.wrike import (
     find_task, list_tasks, get_task_details, get_wrike_users,
     search_tasks, get_task_attachment_content, ingest_document,
+    get_project_timeline,
 )
 
 # Parse --company before FastMCP initializes so validate_company works at import time.
@@ -111,6 +113,8 @@ _register(get_meeting_transcript)
 _register(search_meetings)
 _register(get_meeting_participants)
 _register(get_meeting_chat)
+_register(summarize_transcript_for_ticket)
+_register(get_meeting_ticket_links)
 _register(find_task)
 _register(list_tasks)
 _register(get_task_details)
@@ -118,6 +122,7 @@ _register(get_wrike_users)
 _register(search_tasks)
 _register(get_task_attachment_content)
 _register(ingest_document)
+_register(get_project_timeline)
 
 if __name__ == "__main__":
     if config.SCOPED_COMPANY:

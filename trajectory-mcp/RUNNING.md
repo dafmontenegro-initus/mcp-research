@@ -19,9 +19,15 @@ trajectory-mcp/
 
 ## First-time setup
 
-### 1. Ollama model (do once on machine_20)
+### 1. Ollama models (do once on machine_20)
 ```bash
+# Embedding model — required for RAG search (search_tasks, search_meetings)
 ollama pull qwen3-embedding:4b-q4_K_M
+
+# Summarization model — required for summarize_transcript_for_ticket
+# (falls back to raw transcript if not pulled)
+# qwen3:30b = MoE 30B/3B-activated, 256K context, 19GB Q4_K_M — think mode disabled at runtime
+ollama pull qwen3:30b
 ```
 
 ### 2. MCP server venv

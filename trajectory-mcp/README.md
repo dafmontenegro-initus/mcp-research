@@ -206,13 +206,31 @@ Identify the parent/folder ticket (WSR keyword in title, no date). Store as STAT
 Call `get_time_off`, `get_birthdays`, `get_anniversaries`, `get_company_holidays`
 all in the same turn. Store results as TIME_OFF_DATA.
 
-### Test Output Folder
-Ask the user for the Wrike folder link or ID where the draft ticket should be created.
-Store as TEST_FOLDER_ID. This is the ONLY allowed creation location.
-Do not proceed to Step 1 until this is provided.
+### Output Folder (auto-discover first, then confirm)
 
-If TEMPLATE_ID or STATUS_PARENT_ID cannot be resolved automatically, ask for only the missing
-piece in the same message as the TEST_FOLDER_ID request.
+Run these `find_task` calls in the same parallel batch as the other Step 0 searches:
+- query="MCP Research Auto Reports"
+- query="MCP Research Reports"
+- query="Research Auto Reports"
+- query="Research Reports"
+
+Pick the best match: a folder/container ticket (no date in title, likely no status or
+status=Active) whose name most closely matches one of those patterns.
+Store as TEST_FOLDER_ID.
+
+**If a match is found:** include in your Step 0 reply:
+"I'll create the draft ticket in **[folder name]** ([permalink]). Let me know if you'd
+like to use a different folder."
+This is informational only — do not wait for confirmation here.
+TEST_FOLDER_ID is locked to this folder unless the user explicitly redirects you to another.
+
+**If no match is found:** ask the user once:
+"I couldn't find an output folder automatically. Please share the Wrike folder link or ID
+where I should create the ticket."
+Do not proceed to Step 1 until TEST_FOLDER_ID is set.
+
+If TEMPLATE_ID or STATUS_PARENT_ID also cannot be resolved, include those requests in the
+same message rather than asking separately.
 
 ---
 
@@ -301,8 +319,12 @@ Handle truncation with repeated calls until all UUIDs are fetched.
 **4 sources per meeting — all are complementary, none is a substitute:**
 1. `synthesized_meeting` — Trajectory AI synthesis (if present)
 2. `zoom_summary` — native Zoom summary (different coverage than synthesized_meeting)
-3. VTT transcript — always read when `has_transcript=1`, even if syntheses exist.
-   Use `get_meeting_transcript` with offset pagination until `truncated=false`.
+3. VTT transcript — for meetings without synthesis (`has_synthesis=false` and `has_transcript=true`):
+   - **Prefer** `summarize_transcript_for_ticket(meeting_uuid, ticket_title, company_id)`
+     over raw `get_meeting_transcript`. It uses a local LLM to extract only what's relevant
+     to each ticket — dramatically fewer tokens, no quality loss. Falls back to raw VTT
+     automatically if Ollama is unavailable.
+   - Only call `get_meeting_transcript` directly if you need the full verbatim content.
 4. Chat — always call `get_meeting_chat(meeting_uuid, company_id)`.
    Chat contains informal decisions, links, and mentions not in the spoken transcript.
 
@@ -312,6 +334,11 @@ or identify who made a specific commitment.
 After reading all sources, apply Principle 0 temporal analysis:
 - Note each meeting's `start_time` relative to every ticket's `updated_date`.
 - Flag Contradiction, Gap, Stalled, or AT RISK where applicable.
+
+**Meeting-to-ticket bridge:** call `get_meeting_ticket_links(meeting_uuid, company_id)`
+to get a ranked list of Wrike tickets semantically related to a meeting. Use this
+immediately after `get_meeting_details` to know which tickets to update — no manual
+query formulation required.
 
 ### Source 4 — Semantic Search (use when SQL filters don't reach far enough)
 
@@ -325,6 +352,17 @@ has no clear ticket match, or for any ticket that seems incomplete:
 
 Use `get_task_attachment_content(ticket_id, company_id)` if a ticket surfaced by
 `search_tasks` seems to have relevant attachment content not visible in its description.
+
+### Source 5 — Project Timeline (Principle 0 accelerator)
+
+Call `get_project_timeline(company_id, start_date=cutoff_date, end_date=<today>)` to get
+meetings and ticket updates merged into a single chronological feed. Use this to:
+- Instantly see if any meeting occurred AFTER a ticket's last `updated_date` (Principle 0
+  contradiction signal)
+- Identify gaps: meeting decisions with no subsequent ticket update
+- Spot stalled tickets: long stretches of ticket inactivity while meetings continued
+
+This replaces manual cross-referencing of meeting `start_time` vs ticket `updated_date`.
 
 ---
 
@@ -404,13 +442,17 @@ Timestamps from meetings: [HH:MM:SS] — prepend 00: if only MM:SS is available.
 Never invent a link, UUID, date, or name.
 Respond in English regardless of source language.
 
-After presenting the draft, ask: "Should I create this as a Wrike ticket?"
-Wait for explicit confirmation before creating anything.
+After presenting the draft, ask:
+"Should I create this as a Wrike ticket in **[TEST_FOLDER_NAME]**?"
+(Use the actual folder name discovered in Step 0, not the placeholder.)
+Wait for an explicit "yes" — or equivalent — before creating anything.
 
 TICKET CREATION RULES (only after user confirms "yes"):
 - Use the Wrike connector (not trajectory-mcp — that server is read-only).
-- Create the ticket exclusively in TEST_FOLDER_ID.
+- Create the ticket exclusively in TEST_FOLDER_ID discovered in Step 0.
 - Never create in any other folder, even if a path from the baseline looks more natural.
+- If the user redirects to a different folder mid-session, update TEST_FOLDER_ID and
+  confirm the new target before proceeding.
 - Title: follow the same naming pattern as the baseline (e.g. "WSR – May 11, 2026").
 - Description: the full markdown draft.
 ```
