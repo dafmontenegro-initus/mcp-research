@@ -14,7 +14,7 @@ tmux kill-session -t mcp 2>/dev/null && echo "[~] Killed previous 'mcp' session"
 echo "[1/2] Starting RAG service (port 8090)..."
 tmux new-session -d -s rag "cd $SCRIPT_DIR && rag_service/.venv/bin/python3 rag_service/app.py"
 
-sleep 3
+sleep 6
 if curl -s http://localhost:8090/health > /dev/null 2>&1; then
     echo "      ✓ RAG service up"
 else

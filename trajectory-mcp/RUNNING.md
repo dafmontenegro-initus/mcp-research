@@ -1,5 +1,9 @@
 # Running trajectory-mcp
 
+```bash
+bash ~/workspace/mcp-research/trajectory-mcp/start.sh
+```
+
 Two separate processes, two separate virtual environments.
 
 ```
