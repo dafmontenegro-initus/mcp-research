@@ -1,8 +1,11 @@
 import sys
 import time
+from pathlib import Path
 
 import config
 from fastmcp import FastMCP
+
+_VERSION = (Path(__file__).parent / "VERSION").read_text().strip()
 from mcp.types import ToolAnnotations
 from auth import BearerAuthMiddleware
 
@@ -20,6 +23,7 @@ from tools.wrike import (
 
 mcp = FastMCP(
     "Trajectory",
+    version=_VERSION,
     middleware=[BearerAuthMiddleware()],
     instructions=(
         "Read-only MCP server for Meetings and Wrike data. "

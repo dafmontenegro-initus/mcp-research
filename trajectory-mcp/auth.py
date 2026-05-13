@@ -36,12 +36,16 @@ _session_ids: dict[str, str] = {}
 
 
 def _load_token_map() -> dict[str, str]:
-    """Return {token: email}. Reloaded on every server start (not hot-reloaded)."""
+    """Return {token: email}. Supports both old (string) and new (dict) user formats."""
     if not _USERS_FILE.exists():
         return {}
     try:
-        data: dict[str, str] = json.loads(_USERS_FILE.read_text())
-        return {token: email for email, token in data.items()}
+        data = json.loads(_USERS_FILE.read_text())
+        result = {}
+        for email, entry in data.items():
+            token = entry if isinstance(entry, str) else entry["token"]
+            result[token] = email
+        return result
     except Exception as e:
         print(f"[auth] WARNING: could not load users.json: {e}")
         return {}
