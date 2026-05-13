@@ -1,0 +1,3 @@
+{
+  "user@company.com": "traj_<generate with: python3 -c \"import secrets; print('traj_' + secrets.token_urlsafe(16))\">"
+}

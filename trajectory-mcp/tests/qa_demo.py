@@ -537,6 +537,85 @@ def check_security() -> None:
             _p(WARN, f".gitignore does NOT cover '{secret_pattern}'")
 
 
+# ── 10. Session traces ────────────────────────────────────────────────────────
+
+def check_trace_db() -> None:
+    _section("Session traces — trace_db")
+    import sqlite3 as _sqlite3, time as _time
+
+    db_path = Path(__file__).parent.parent / "traces" / "traces.db"
+    if not db_path.exists():
+        _p(SKIP, f"No trace DB yet — will be created on first tool call ({db_path})")
+        return
+
+    try:
+        conn = _sqlite3.connect(str(db_path))
+        conn.row_factory = _sqlite3.Row
+    except Exception as e:
+        _p(WARN, f"Cannot open trace DB: {e}")
+        return
+
+    # Recent sessions (last 5)
+    sessions = conn.execute(
+        "SELECT session_id, user_email, client_ip, company_id, started_at, last_call_at, total_calls, error_count "
+        "FROM sessions ORDER BY started_at DESC LIMIT 5"
+    ).fetchall()
+
+    if not sessions:
+        _p(INFO, "Trace DB exists but no sessions recorded yet")
+        conn.close()
+        return
+
+    total_sessions = conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0]
+    _p(PASS, f"Trace DB found — {total_sessions} sessions total, showing last {len(sessions)}")
+
+    for s in sessions:
+        start_dt = datetime.fromtimestamp(s["started_at"]).strftime("%Y-%m-%d %H:%M")
+        duration = int((s["last_call_at"] - s["started_at"]) / 60)
+        errors = f"  {s['error_count']} errors" if s["error_count"] else ""
+        user = s["user_email"] or s["client_ip"] or "anon"
+        co = s["company_id"] or "?"
+        _p(INFO, f"  {start_dt} | {user} | {co} | {s['total_calls']} calls / {duration}m{errors}")
+
+    # Slowest tools in last 7 days
+    week_ago = _time.time() - 7 * 86400
+    slow = conn.execute(
+        "SELECT tool, CAST(AVG(duration_ms) AS INTEGER) avg_ms, MAX(duration_ms) max_ms, COUNT(*) n "
+        "FROM tool_calls WHERE called_at > ? GROUP BY tool ORDER BY avg_ms DESC LIMIT 8",
+        [week_ago],
+    ).fetchall()
+
+    if slow:
+        _p(INFO, "  Slowest tools (7d avg):")
+        for row in slow:
+            _p(INFO, f"    {row['tool']}: avg={row['avg_ms']}ms  max={row['max_ms']}ms  n={row['n']}")
+
+    # Error rate in last 7 days
+    total_calls = conn.execute(
+        "SELECT COUNT(*) FROM tool_calls WHERE called_at > ?", [week_ago]
+    ).fetchone()[0]
+    error_calls = conn.execute(
+        "SELECT COUNT(*) FROM tool_calls WHERE called_at > ? AND ok=0", [week_ago]
+    ).fetchone()[0]
+
+    if total_calls > 0:
+        rate = 100 * error_calls / total_calls
+        level = PASS if rate < 5 else WARN
+        _p(level, f"Error rate (7d): {error_calls}/{total_calls} calls = {rate:.1f}%")
+
+        # Surface the actual errors
+        if error_calls > 0:
+            errors_detail = conn.execute(
+                "SELECT tool, error_msg, COUNT(*) n FROM tool_calls "
+                "WHERE called_at > ? AND ok=0 GROUP BY tool, error_msg ORDER BY n DESC LIMIT 5",
+                [week_ago],
+            ).fetchall()
+            for e in errors_detail:
+                _p(INFO, f"    {e['tool']} ({e['n']}x): {e['error_msg'][:80]}")
+
+    conn.close()
+
+
 # ── Main ──────────────────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
@@ -558,5 +637,6 @@ if __name__ == "__main__":
         if sample_uuid:
             check_transcript(company, sample_uuid)
     check_rag(company, cutoff or (date.today() - timedelta(days=7)).isoformat())
+    check_trace_db()
 
     sys.exit(_summary())

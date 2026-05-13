@@ -4,6 +4,7 @@ import time
 import config
 from fastmcp import FastMCP
 from mcp.types import ToolAnnotations
+from auth import BearerAuthMiddleware
 
 from tools.bamboohr import get_anniversaries, get_birthdays, get_company_holidays, get_time_off
 from tools.meetings import (
@@ -17,17 +18,9 @@ from tools.wrike import (
     get_project_timeline,
 )
 
-# Parse --company before FastMCP initializes so validate_company works at import time.
-_company_arg = None
-if "--company" in sys.argv:
-    _idx = sys.argv.index("--company")
-    if _idx + 1 < len(sys.argv):
-        _company_arg = sys.argv[_idx + 1].upper()
-
-config.SCOPED_COMPANY = _company_arg
-
 mcp = FastMCP(
     "Trajectory",
+    middleware=[BearerAuthMiddleware()],
     instructions=(
         "Read-only MCP server for Meetings and Wrike data. "
         "Designed to power the Weekly Status Report (WSR) investigation flow. "
@@ -46,16 +39,12 @@ _read_only = ToolAnnotations(
 
 def list_companies() -> dict:
     """
-    Return the company IDs available on this server instance.
+    Return all company IDs available on this server.
 
-    Call this at the start of any session where the target company is not clear
-    from the user's message. In single-tenant mode (server started with --company),
-    returns the one scoped company. In multi-tenant mode, queries the database for
-    all distinct project_ids in meetings_projects — the authoritative source of truth.
+    Queries the database for all distinct project_ids — the authoritative source
+    of truth. Call this at the start of any session where the target company is
+    not known from the user's message.
     """
-    if config.SCOPED_COMPANY:
-        return {"mode": "single-tenant", "companies": [config.SCOPED_COMPANY]}
-
     from db import get_meet_conn
     conn = get_meet_conn()
     try:
@@ -69,7 +58,7 @@ def list_companies() -> dict:
         conn.close()
 
     companies = [row["project_id"] for row in rows]
-    return {"mode": "multi-tenant", "companies": companies}
+    return {"companies": companies}
 
 
 import functools
@@ -90,10 +79,16 @@ def _logged(fn):
             traceback.print_exc(file=sys.stderr)
             raise
         elapsed = (time.monotonic() - t0) * 1000
-        if isinstance(result, dict) and "error" in result:
+        is_error = isinstance(result, dict) and "error" in result
+        if is_error:
             print(f"[tool] {fn.__name__} ERROR ({elapsed:.0f}ms): {result['error']}", file=sys.stderr, flush=True)
         else:
             print(f"[tool] {fn.__name__} OK ({elapsed:.0f}ms)", file=sys.stderr, flush=True)
+        try:
+            import trace_db
+            trace_db.record(fn.__name__, params, result, elapsed, ok=not is_error)
+        except Exception:
+            pass
         return result
     return wrapper
 
@@ -125,10 +120,7 @@ _register(ingest_document)
 _register(get_project_timeline)
 
 if __name__ == "__main__":
-    if config.SCOPED_COMPANY:
-        print(f"[trajectory-mcp] started — scoped to company: {config.SCOPED_COMPANY}", file=sys.stderr)
-    else:
-        print("[trajectory-mcp] started — multi-tenant mode", file=sys.stderr)
+    print("[trajectory-mcp] started — multi-tenant mode", file=sys.stderr)
 
     if "--stdio" in sys.argv:
         mcp.run(transport="stdio")

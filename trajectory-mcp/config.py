@@ -44,17 +44,8 @@ if _missing:
     print(f"[trajectory-mcp] ERROR: missing required env vars: {', '.join(_missing)}", file=sys.stderr)
     sys.exit(1)
 
-# Set by server.py at startup when --company flag is provided.
-SCOPED_COMPANY: str | None = None
-
-
 def validate_company(company_id: str) -> str | None:
-    """Return an error string if this server instance is scoped and company_id doesn't match."""
-    if SCOPED_COMPANY and company_id.upper() != SCOPED_COMPANY:
-        return (
-            f"This server instance is scoped to company {SCOPED_COMPANY}. "
-            f"Requested: {company_id.upper()}"
-        )
+    """No-op — server is always multi-tenant. Kept for call-site compatibility."""
     return None
 
 
