@@ -64,7 +64,8 @@ def _background_warmup():
                 result = ensure_warm(company_id, data_type, environment)
                 loaded = result.get("keys_loaded", 0)
                 total = result.get("keys_found", 0)
-                print(f"[rag_service] {data_type}/{company_id}: {loaded}/{total} keys ingested")
+                fresh = total - loaded
+                print(f"[rag_service] {data_type}/{company_id}: {loaded} updated, {fresh} already fresh ({total} total)")
             except Exception as e:
                 print(f"[rag_service] warmup error {data_type}/{company_id}: {e}")
 

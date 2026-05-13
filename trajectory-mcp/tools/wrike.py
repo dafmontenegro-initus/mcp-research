@@ -3,6 +3,7 @@ from __future__ import annotations
 import io
 import os
 import pickle
+import re
 
 import boto3
 import httpx
@@ -30,12 +31,23 @@ _FIND_COLUMNS = (
     "created_date, due_date, updated_date, permalink"
 )
 
+# BOM (U+FEFF), zero-width space/joiner/non-joiner, and other invisible control chars
+_INVISIBLE_RE = re.compile(r"[﻿​‌‍⁠­]")
+
+
+def _clean(v: object) -> object:
+    if isinstance(v, str):
+        return _INVISIBLE_RE.sub("", v)
+    return v
+
 
 def _serialize(rows: list[dict]) -> list[dict]:
     for row in rows:
         for f in _DATE_FIELDS:
             if row.get(f) is not None:
                 row[f] = str(row[f])
+        for k in list(row):
+            row[k] = _clean(row[k])
     return rows
 
 

@@ -325,20 +325,23 @@ If the response is truncated, call again with the remaining ids and merge.
 
 ### Source 3 — Meetings (exhaustive sweep + 4 sources per meeting)
 
-Call `list_meetings(start_after=cutoff_date)`.
-For ALL returned UUIDs, call `get_meeting_details` in the same batch.
-Handle truncation with repeated calls until all UUIDs are fetched.
+**⚠️ MANDATORY — skipping this source produces an incomplete WSR.**
 
-**4 sources per meeting — all are complementary, none is a substitute:**
-1. `synthesized_meeting` — Trajectory AI synthesis (if present)
-2. `zoom_summary` — native Zoom summary (different coverage than synthesized_meeting)
-3. VTT transcript — for meetings without synthesis (`has_synthesis=false` and `has_transcript=true`):
+Step A — always required:
+Call `list_meetings(start_after=cutoff_date)`. Collect every UUID returned.
+Immediately call `get_meeting_details` for ALL UUIDs in the same batch.
+Handle truncation with repeated calls until all UUIDs are fetched.
+If `list_meetings` returns zero meetings, note that explicitly and move on — do not skip Step B.
+
+Step B — per meeting, read all 4 sources (all are complementary, none is a substitute):
+1. `synthesized_meeting` field from `get_meeting_details` — Trajectory AI synthesis (if present)
+2. `zoom_summary` field from `get_meeting_details` — native Zoom summary (different coverage)
+3. VTT transcript — for meetings where `has_synthesis=false` and `has_transcript=true`:
    - **Prefer** `summarize_transcript_for_ticket(meeting_uuid, ticket_title, company_id)`
-     over raw `get_meeting_transcript`. It uses a local LLM to extract only what's relevant
-     to each ticket — dramatically fewer tokens, no quality loss. Falls back to raw VTT
-     automatically if Ollama is unavailable.
-   - Only call `get_meeting_transcript` directly if you need the full verbatim content.
-4. Chat — always call `get_meeting_chat(meeting_uuid, company_id)`.
+     over raw `get_meeting_transcript`. Uses a local LLM — fewer tokens, no quality loss.
+     Falls back to raw VTT automatically if Ollama is unavailable.
+   - Only call `get_meeting_transcript` directly if you need full verbatim content.
+4. Chat — call `get_meeting_chat(meeting_uuid, company_id)` for every meeting.
    Chat contains informal decisions, links, and mentions not in the spoken transcript.
 
 Also call `get_meeting_participants` for any meeting where you need to verify attendance
@@ -422,11 +425,17 @@ MEETING LINKAGE: For each ticket, check if any meeting since cutoff_date mention
 If so, incorporate the decision or action item and cite the meeting date.
 
 TIME OFF SECTION:
-Before writing this section, build a PROJECT MEMBER WHITELIST in memory using data already
-fetched in Step 2 — no additional tool calls needed:
-  1. All names/emails that appear as responsibles in any ticket from Source 2.
-  2. All names/emails that appear as participants in any meeting from Source 3.
-Union of both sets = PROJECT_MEMBERS.
+Before writing this section, build a PROJECT MEMBER WHITELIST. Call `get_wrike_users(company_id)`
+now — this is a fast, single-query tool that returns all unique responsibles across the entire
+workspace history and is the most complete source for member discovery:
+  1. All names returned by `get_wrike_users(company_id)`.
+  2. All names/emails that appear as responsibles in any ticket from Source 2.
+  3. All emails in the `participants_emails` field of any meeting returned by `list_meetings`
+     in Source 3 (this field is included in every list_meetings row — no extra call needed).
+Union of all three sets = PROJECT_MEMBERS.
+
+Err on the side of inclusion: a person who appears only in `get_wrike_users` but had no
+activity this week is still a project member. The PM will remove any entries that don't belong.
 
 Then:
 - Carry forward all entries from BASELINE_CONTENT whose end date has not yet passed.
