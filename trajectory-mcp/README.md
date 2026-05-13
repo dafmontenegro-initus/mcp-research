@@ -407,19 +407,34 @@ TICKET RULES:
 3. Closed tickets (Pass 3): move to completed section. Keep brief.
 4. Overdue tickets (Pass 5): fit into existing sections, mark clearly with due date.
 5. Container/organizer tickets (appear in other tickets' `paths` as parent): EXCLUDE entirely.
-6. No new activity: include current status, due_date, brief description, note
+6. No new activity: include current status, due_date, brief description, and note
    "No changes this week." Never omit a baseline ticket.
+   - If last_updated is more than 7 days before today: also add ⚠️ Stalled flag (see AUTO-FLAGS).
+   - If last_updated is within 7 days but nothing changed: "No changes this week." only.
+
+FORBIDDEN PHRASES — never write these; they are legacy placeholders from prior baselines and
+carry no information. The agent must never copy them forward or generate them:
+- "What is pending here?" → Replace with the ⚠️ Stalled flag + last update date,
+  or "No changes this week." if the ticket was recently touched.
+- "What's next here?" / "Do we need to follow up?" → Same replacement rule.
+  If a genuine unanswered question exists, surface it as a named action item with an owner instead.
 
 AUTO-FLAGS (embed inline at the affected ticket/section):
 - `⚠️ AT RISK — due [date]` if due_date ≤ 7 days from today and status ≠ Completed/Cancelled.
 - `⚠️ Contradiction detected — meeting on [date] said [X], but Wrike shows [Y]`
 - `⚠️ Gap detected — [decision] has no associated ticket (from meeting on [date])`
-- `⚠️ Stalled — last updated [N] days ago`
+- `⚠️ Stalled — last updated [date] ([N] days ago)` — use when last_updated is more than 7 days before today
 
 CONTENT PER TICKET:
 - permalink, last update date, responsible (write "Unassigned" if empty)
 - Summary of what happened or will happen
 - Status and next steps
+
+CROSS-REFERENCES: When a ticket is already covered in full in another section of the same WSR,
+write a one-line entry in the secondary section:
+  [Ticket Title](permalink) — [status] — due [date] — (full detail in [Section Name])
+Never write just the cross-reference text alone with no status or date — the section must be
+readable on its own even if the reader skips the primary section.
 
 MEETING LINKAGE: For each ticket, check if any meeting since cutoff_date mentioned it.
 If so, incorporate the decision or action item and cite the meeting date.
@@ -457,7 +472,17 @@ BUDGET SECTION:
 - If no budget link exists in the baseline, omit the Budget section entirely.
 
 ACTION ITEMS SECTION:
-Add a dedicated section at the bottom consolidating all pending deliverables with owners and dates.
+Add a dedicated section at the bottom consolidating pending deliverables.
+An action item must have ALL THREE: (1) a specific named person, (2) a concrete deliverable,
+(3) a forward-looking due date (today or later).
+
+EXCLUDE from action items:
+- Items whose due date has already passed with no recent owner activity — flag ⚠️ Stalled in the
+  ticket entry instead; the PM can decide whether to reopen or close.
+- Vague items with no clear owner (e.g., "Team to confirm", "PM to review" without specifics).
+- Items already completed or cancelled this week — those belong in the Completed section.
+
+Use "ASAP" only when no date is determinable from any source; prefer a specific date whenever possible.
 
 PM-INPUT FLAGS:
 Explicitly flag every section that requires PM completion: Time Off details, discussion topics,
