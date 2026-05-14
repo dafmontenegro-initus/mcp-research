@@ -32,8 +32,14 @@ if [ -n "$TOKEN" ] && ! curl -s --max-time 3 "http://localhost:8080/mcp?token=$T
 fi
 
 # ── Launch assay in tmux ──────────────────────────────────────────────────────
+# Pass the caller's terminal size to tmux so Rich Console (instantiated at
+# module load before the user attaches) reads the real width, not tmux's
+# 80×24 default — otherwise output wraps awkwardly inside wide terminals.
+COLS=$(tput cols 2>/dev/null || echo 200)
+LINES=$(tput lines 2>/dev/null || echo 50)
 echo "Starting assay agent…"
-tmux new-session -d -s assay "cd $SCRIPT_DIR && .venv/bin/python3 runner.py $ARGS; echo ''; echo '[ assay finished — press any key to close ]'; read"
+tmux new-session -d -s assay -x "$COLS" -y "$LINES" \
+    "cd $SCRIPT_DIR && .venv/bin/python3 runner.py $ARGS; echo ''; echo '[ assay finished — press any key to close ]'; read"
 
 sleep 1
 if tmux has-session -t assay 2>/dev/null; then

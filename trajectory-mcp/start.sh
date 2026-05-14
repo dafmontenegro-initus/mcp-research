@@ -10,9 +10,16 @@ cd "$SCRIPT_DIR"
 tmux kill-session -t rag 2>/dev/null && echo "[~] Killed previous 'rag' session"
 tmux kill-session -t mcp 2>/dev/null && echo "[~] Killed previous 'mcp' session"
 
+# Pass the caller's terminal size to tmux so log output uses the real width
+# instead of tmux's 80×24 default — otherwise output wraps awkwardly when the
+# user attaches later from a wider terminal.
+COLS=$(tput cols 2>/dev/null || echo 200)
+LINES=$(tput lines 2>/dev/null || echo 50)
+
 # ── RAG service ───────────────────────────────────────────────────────────────
 echo "[1/2] Starting RAG service (port 8090)..."
-tmux new-session -d -s rag "cd $SCRIPT_DIR && rag_service/.venv/bin/python3 rag_service/app.py"
+tmux new-session -d -s rag -x "$COLS" -y "$LINES" \
+    "cd $SCRIPT_DIR && rag_service/.venv/bin/python3 rag_service/app.py"
 
 echo -n "      waiting (cold start may take ~10 min for NWN warmup)"
 RAG_UP=0
@@ -31,7 +38,8 @@ done
 
 # ── MCP server ────────────────────────────────────────────────────────────────
 echo "[2/2] Starting MCP server (port 8080)..."
-tmux new-session -d -s mcp "cd $SCRIPT_DIR && .venv/bin/python3 server.py"
+tmux new-session -d -s mcp -x "$COLS" -y "$LINES" \
+    "cd $SCRIPT_DIR && .venv/bin/python3 server.py"
 
 sleep 2
 if curl -s http://localhost:8080/mcp > /dev/null 2>&1; then
