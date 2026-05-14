@@ -191,7 +191,6 @@ def run(tool_filter: str | None = None, dry_run: bool = False) -> None:
 
         with console.status("Listing tools..."):
             tools = client.list_tools()
-        console.print(f"  {len(tools)} tools available")
 
         if dry_run:
             console.print("\n[bold yellow]Dry run — stopping here.[/]")
