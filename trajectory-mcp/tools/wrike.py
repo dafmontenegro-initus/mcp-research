@@ -169,6 +169,9 @@ def list_tasks(
     if err:
         return {"error": err}
 
+    if limit is not None and limit == 0:
+        return {"tasks": [], "total": 0}
+
     table = wrike_table(company_id)
 
     conditions: list[str] = []

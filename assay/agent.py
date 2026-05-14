@@ -1,5 +1,5 @@
 """
-Main Reflexion loop for crucible.
+Main Reflexion loop for assay.
 
 Flow:
   1. Initialize MCP session
@@ -32,7 +32,7 @@ _SKIP_TOOLS = {"ingest_document"}
 
 # Tools used only during discovery — tested separately in the discovery phase,
 # not re-tested in the main loop.
-_DISCOVERY_TOOLS = {"list_companies"}
+_DISCOVERY_TOOLS = {"list_companies", "get_rag_health", "get_index_stats", "list_models"}
 
 
 def _print_verdict(case: TestCase, verdict: Verdict, duration_ms: int) -> None:
@@ -59,12 +59,24 @@ def _discovery_phase(client: MCPClient) -> dict:
         discovery["companies"] = [c for c in r.raw.get("companies", []) if c]
         console.print(f"  companies: {discovery['companies']}")
 
-    # Real NWN meeting UUIDs
-    r = client.call_tool("list_meetings", {"company_id": "NWN", "limit": 5})
+    # Real NWN meeting UUIDs — sample more to find ones with transcripts
+    r = client.call_tool("list_meetings", {"company_id": "NWN", "limit": 20})
     if not r.is_error and isinstance(r.raw, dict):
         meetings = r.raw.get("meetings", [])
-        discovery["nwn"]["meeting_uuids"] = [m.get("meeting_uuid") or m.get("uuid") for m in meetings if m]
-        console.print(f"  NWN meetings: {len(meetings)} sampled")
+        discovery["nwn"]["meeting_uuids"] = [m.get("meeting_uuid") for m in meetings if m]
+        discovery["nwn"]["transcript_uuids"] = [
+            m.get("meeting_uuid") for m in meetings
+            if m and m.get("has_transcript")
+        ][:5]
+        discovery["nwn"]["synthesis_uuids"] = [
+            m.get("meeting_uuid") for m in meetings
+            if m and m.get("has_synthesis")
+        ][:5]
+        console.print(
+            f"  NWN meetings: {len(meetings)} sampled "
+            f"({len(discovery['nwn']['transcript_uuids'])} with transcript, "
+            f"{len(discovery['nwn']['synthesis_uuids'])} with synthesis)"
+        )
 
     # Real NWN ticket IDs
     r = client.call_tool("list_tasks", {"company_id": "NWN", "limit": 5})
@@ -80,11 +92,26 @@ def _discovery_phase(client: MCPClient) -> dict:
         discovery["nwn"]["user_names"] = [u for u in users[:5] if isinstance(u, str)]
         console.print(f"  NWN users: {len(users)} found")
 
-    # Pick a second company for cross-tenant tests
+    # Pick a second company for cross-tenant tests and collect its real UUIDs
     others = [c for c in discovery["companies"] if c != "NWN"]
     if others:
-        discovery["other_company"] = others[0]
-        console.print(f"  cross-tenant company: {others[0]}")
+        other = others[0]
+        discovery["other_company"] = other
+        r = client.call_tool("list_meetings", {"company_id": other, "limit": 5})
+        if not r.is_error and isinstance(r.raw, dict):
+            other_meetings = r.raw.get("meetings", [])
+            discovery.setdefault("other", {})["meeting_uuids"] = [
+                m.get("meeting_uuid") for m in other_meetings if m
+            ]
+        console.print(f"  cross-tenant company: {other} ({len(discovery.get('other', {}).get('meeting_uuids', []))} meetings sampled)")
+
+    # RAG health snapshot — lets the LLM know if search infrastructure is up
+    r = client.call_tool("get_rag_health", {})
+    if not r.is_error and isinstance(r.raw, dict):
+        discovery["rag_health"] = r.raw
+        rag_ok = r.raw.get("rag_service", {}).get("available", False)
+        embed_ok = r.raw.get("ollama_embedding", {}).get("available", False)
+        console.print(f"  RAG service: {'up' if rag_ok else 'DOWN'} | embedding: {'up' if embed_ok else 'DOWN'}")
 
     return discovery
 
@@ -158,7 +185,7 @@ def test_tool(
 
 
 def run(tool_filter: str | None = None, dry_run: bool = False) -> None:
-    console.rule("[bold magenta]crucible[/] — autonomous QA agent")
+    console.rule("[bold magenta]assay[/] — autonomous QA agent")
 
     with MCPClient() as client:
         with console.status("Initializing MCP session…"):

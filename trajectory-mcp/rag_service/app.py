@@ -47,10 +47,11 @@ class IngestDocumentRequest(BaseModel):
 
 # ── App ──────────────────────────────────────────────────────────────────────
 
-def _background_warmup():
+def _background_warmup(force_check: bool = False):
     """
     Pre-warm ChromaDB for companies listed in WARMUP_COMPANIES (comma-separated).
-    Runs in a background thread at startup so the first query doesn't hit a cold S3 load.
+    force_check=True bypasses the 24h cache and re-checks S3 for every key — used by
+    the periodic re-warm so daemon updates are picked up without a full restart.
     """
     companies_raw = os.getenv("WARMUP_COMPANIES", "")
     if not companies_raw.strip():
@@ -59,9 +60,9 @@ def _background_warmup():
     environment = os.getenv("WARMUP_ENVIRONMENT", "prod")
     for company_id in companies:
         for data_type in ("wrike", "meetings"):
-            print(f"[rag_service] warming {data_type} for {company_id}...")
+            print(f"[rag_service] warming {data_type} for {company_id}{'  (force)' if force_check else ''}...")
             try:
-                result = ensure_warm(company_id, data_type, environment)
+                result = ensure_warm(company_id, data_type, environment, force_check=force_check)
                 loaded = result.get("keys_loaded", 0)
                 total = result.get("keys_found", 0)
                 fresh = total - loaded
@@ -70,16 +71,48 @@ def _background_warmup():
                 print(f"[rag_service] warmup error {data_type}/{company_id}: {e}")
 
 
+def _seconds_until_next_rewarm() -> float:
+    """Seconds until the next :25 or :55 mark. Daemon finishes ~:20 and ~:50, so
+    running at :25/:55 guarantees we always check S3 after the daemon is done."""
+    from datetime import datetime, timedelta
+    now = datetime.now()
+    for minute in (25, 55):
+        target = now.replace(minute=minute, second=0, microsecond=0)
+        if target > now:
+            return (target - now).total_seconds()
+    target = (now + timedelta(hours=1)).replace(minute=25, second=0, microsecond=0)
+    return (target - now).total_seconds()
+
+
+async def _periodic_rewarm_task():
+    """Async task: re-warm at :25 and :55 past every hour without blocking a thread.
+    The actual S3/disk work runs in the thread pool via run_in_executor so search
+    requests are never blocked while the re-warm is in progress."""
+    import asyncio
+    while True:
+        wait = _seconds_until_next_rewarm()
+        print(f"[rag_service] next re-warm in {int(wait // 60)}m {int(wait % 60)}s")
+        await asyncio.sleep(wait)
+        print(f"[rag_service] periodic re-warm starting...")
+        loop = asyncio.get_event_loop()
+        await loop.run_in_executor(None, lambda: _background_warmup(force_check=True))
+        print(f"[rag_service] periodic re-warm complete")
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    import threading
     print(f"[rag_service] v{RAG_SERVICE_VERSION} starting")
     print(f"[rag_service] Ollama available: {embedder.is_available()}")
     print(f"[rag_service] Reranker loading...")
     reranker.is_available()  # warm up on startup
-    warmup_thread = threading.Thread(target=_background_warmup, daemon=True)
-    warmup_thread.start()
+    # Blocking warmup — server only becomes ready after index cache is hot.
+    # On cold start this may take several minutes; on warm restart it's near-instant
+    # because the 24h TTL keeps all manifest entries fresh.
+    _background_warmup()
     print(f"[rag_service] Ready")
+    # Periodic re-warm at :25 and :55 — picks up daemon updates without a restart.
+    import asyncio
+    asyncio.create_task(_periodic_rewarm_task())
     yield
 
 
@@ -134,7 +167,17 @@ def search_tasks(req: SearchTasksRequest):
 
     # 4. Rerank
     ranked = reranker.rerank(req.query, candidates)
-    top = ranked[: req.top_k]
+
+    # Deduplicate by item_id — keep only the highest-ranked chunk per ticket.
+    # A ticket may have many chunks; without dedup the same ticket appears multiple times.
+    seen_ids: set = set()
+    deduped = []
+    for hit in ranked:
+        item_id = hit.get("metadata", {}).get("item_id", "")
+        if item_id not in seen_ids:
+            seen_ids.add(item_id)
+            deduped.append(hit)
+    top = deduped[: req.top_k]
 
     # 5. Format LLM-friendly output
     results = []
@@ -177,7 +220,16 @@ def search_meetings(req: SearchMeetingsRequest):
         return {"results": [], "message": "No results found. The meetings index may be empty."}
 
     ranked = reranker.rerank(req.query, candidates)
-    top = ranked[: req.top_k]
+
+    # Deduplicate by item_id — keep only the highest-ranked chunk per meeting.
+    seen_ids: set = set()
+    deduped = []
+    for hit in ranked:
+        item_id = hit.get("metadata", {}).get("item_id", "")
+        if item_id not in seen_ids:
+            seen_ids.add(item_id)
+            deduped.append(hit)
+    top = deduped[: req.top_k]
 
     results = []
     for hit in top:
@@ -189,6 +241,62 @@ def search_meetings(req: SearchMeetingsRequest):
         })
 
     return {"results": results, "total_candidates": len(candidates)}
+
+
+# ── /stats/{company_id} ──────────────────────────────────────────────────────
+
+@app.get("/stats/{company_id}")
+def index_stats(company_id: str, environment: str = "prod"):
+    """Return RAG index stats for a company: file counts, chunk counts, last sync."""
+    from datetime import datetime, timezone
+    from pickle_sync import (
+        _load_manifest, _get_company_meeting_uuids,
+        STALENESS_SECONDS, _WRIKE_BUCKETS, _MEETINGS_BUCKET,
+    )
+
+    manifest = _load_manifest()
+    now = datetime.now(timezone.utc)
+    result: dict = {"company_id": company_id.upper()}
+
+    # ── Wrike stats ───────────────────────────────────────────────────────────
+    wrike_bucket = _WRIKE_BUCKETS.get(environment, "assets-tj-prod")
+    wrike_prefix = f"{wrike_bucket}/wrike/{company_id.upper()}/"
+    wrike_entries = [
+        v for k, v in manifest.items()
+        if k.startswith(wrike_prefix) and not v.get("not_found")
+    ]
+    wrike_last = max(
+        (datetime.fromisoformat(e["ingested_at"]) for e in wrike_entries if e.get("ingested_at")),
+        default=None,
+    )
+    result["wrike"] = {
+        "indexed_files": len(wrike_entries),
+        "total_chunks": sum(e.get("chunks", 0) for e in wrike_entries),
+        "last_synced": wrike_last.isoformat() if wrike_last else None,
+        "stale": (now - wrike_last).total_seconds() > STALENESS_SECONDS if wrike_last else True,
+    }
+
+    # ── Meetings stats ────────────────────────────────────────────────────────
+    uuids = _get_company_meeting_uuids(company_id)
+    meet_entries = []
+    for uuid in uuids:
+        key = f"{_MEETINGS_BUCKET}/{uuid}/{uuid}_embeddings.pkl"
+        v = manifest.get(key)
+        if v and not v.get("not_found"):
+            meet_entries.append(v)
+    meet_last = max(
+        (datetime.fromisoformat(e["ingested_at"]) for e in meet_entries if e.get("ingested_at")),
+        default=None,
+    )
+    result["meetings"] = {
+        "total_meetings_in_db": len(uuids),
+        "indexed_files": len(meet_entries),
+        "total_chunks": sum(e.get("chunks", 0) for e in meet_entries),
+        "last_synced": meet_last.isoformat() if meet_last else None,
+        "stale": (now - meet_last).total_seconds() > STALENESS_SECONDS if meet_last else True,
+    }
+
+    return result
 
 
 # ── /ingest/document ─────────────────────────────────────────────────────────

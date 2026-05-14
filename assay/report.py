@@ -1,5 +1,5 @@
 """
-Findings accumulator and report writer for crucible.
+Findings accumulator and report writer for assay.
 
 Accumulates findings in memory, then writes two files at the end:
   findings/YYYY-MM-DD_HHMM/report.md   — human-readable
@@ -112,7 +112,7 @@ class Report:
 
         if not index_path.exists():
             index_path.write_text(
-                "# Crucible — Run History\n\n"
+                "# Assay — Run History\n\n"
                 "| Run | Tools | Tests | Results | Duration |\n"
                 "|-----|-------|-------|---------|----------|\n"
                 + new_row + "\n"
@@ -150,7 +150,7 @@ class Report:
         lines: list[str] = []
 
         lines += [
-            f"# Crucible QA Report — {now}",
+            f"# Assay QA Report — {now}",
             "",
             f"**Duration:** {elapsed // 60}m {elapsed % 60}s  |  "
             f"**Tools tested:** {summary['tools_tested']}  |  "

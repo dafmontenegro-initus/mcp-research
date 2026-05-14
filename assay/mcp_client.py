@@ -98,7 +98,7 @@ class MCPClient:
                 "params": {
                     "protocolVersion": "2024-11-05",
                     "capabilities": {},
-                    "clientInfo": {"name": "crucible", "version": "1.0"},
+                    "clientInfo": {"name": "assay", "version": "1.0"},
                 },
             },
             headers=self._headers(),

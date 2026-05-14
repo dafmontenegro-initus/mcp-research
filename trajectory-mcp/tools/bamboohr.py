@@ -92,10 +92,20 @@ def _filter_overlap(
     return result
 
 
+def _clean_date(s: str | None) -> str | None:
+    """Strip surrounding quotes/spaces that LLMs sometimes embed in string values."""
+    if not s:
+        return None
+    cleaned = s.strip().strip("\"'").strip()
+    return cleaned if cleaned else None
+
+
 def _default_window(start: str | None, end: str | None) -> tuple[date, date]:
     today = date.today()
-    ws = date.fromisoformat(start) if start else today - timedelta(days=today.weekday())
-    we = date.fromisoformat(end) if end else ws + timedelta(days=6)
+    s = _clean_date(start)
+    e = _clean_date(end)
+    ws = date.fromisoformat(s) if s else today - timedelta(days=today.weekday())
+    we = date.fromisoformat(e) if e else ws + timedelta(days=6)
     return ws, we
 
 

@@ -67,6 +67,9 @@ def list_meetings(
     if err:
         return {"error": err}
 
+    if limit is not None and limit == 0:
+        return {"meetings": [], "total": 0}
+
     conditions = [
         "m.status != 'inactive'",
         "m.meeting_uuid IN (SELECT meeting_id FROM meetings_assets.meetings_projects WHERE project_id = %s)",

@@ -10,6 +10,7 @@ from mcp.types import ToolAnnotations
 from auth import BearerAuthMiddleware
 
 from tools.bamboohr import get_anniversaries, get_birthdays, get_company_holidays, get_time_off
+from tools.diagnostics import get_rag_health, get_index_stats, list_models
 from tools.meetings import (
     list_meetings, get_meeting_details, get_meeting_transcript,
     search_meetings, get_meeting_participants, get_meeting_chat,
@@ -122,6 +123,9 @@ _register(search_tasks)
 _register(get_task_attachment_content)
 _register(ingest_document)
 _register(get_project_timeline)
+_register(get_rag_health)
+_register(get_index_stats)
+_register(list_models)
 
 if __name__ == "__main__":
     print("[trajectory-mcp] started — multi-tenant mode", file=sys.stderr)

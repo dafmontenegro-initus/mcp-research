@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-crucible — autonomous QA agent for trajectory-mcp.
+assay — autonomous QA agent for trajectory-mcp.
 
 Usage:
   python3 runner.py                  # full run (all tools)
