@@ -212,8 +212,6 @@ def run(tool_filter: str | None = None, dry_run: bool = False) -> None:
         and t.name not in _DISCOVERY_TOOLS
         and (tool_filter is None or t.name == tool_filter)
     ]
-    console.print(f"\nTesting [bold]{len(tools_to_test)}[/] tools (sequential)…\n")
-
     def _handle_interrupt(sig, frame):
         console.print("\n\n[yellow]Interrupted — writing partial report...[/]")
         path = report.finalize()

@@ -389,7 +389,10 @@ def generate_test_cases(
     """Ask the generator model to produce 8-12 test cases for a tool. Retries once on parse failure."""
     other_companies = [c for c in companies if c != "NWN"][:5]
 
-    prompt = f"""Generate 8 to 12 test cases for the following MCP tool.
+    prompt = f"""Generate 3 to 5 test cases for the following MCP tool, scaled
+to the tool's parameter complexity (fewer for simple 2-param tools, more for
+tools with many parameters and richer behavior). The follow-up mechanism will
+deepen coverage on interesting findings — do not pad with redundant cases.
 
 ## Tool
 Name: {tool_name}
@@ -404,12 +407,13 @@ All: {companies}
 Largest (NWN) — use for stress/volume tests.
 Others for isolation tests: {other_companies}
 
-## Test categories to cover
-1. Happy path — 2 or 3 cases with valid, realistic inputs
-2. Edge cases — empty strings, boundary dates, limit=0, limit=9999, missing optional args
-3. Invalid inputs — wrong types, nonexistent IDs, SQL injection strings, very long strings
-4. Cross-tenant — use a UUID or ticket_id from NWN but request it for a different company_id
-5. Stress (NWN only) — max limit, broadest date range, largest payloads
+## Test categories to cover (pick the ones that matter for THIS tool)
+1. Happy path — at least one realistic input
+2. Edge / invalid inputs — boundary values, empty strings, wrong types, nonexistent
+   IDs, SQL injection strings, missing optional args, limit=0, limit=9999
+3. Cross-tenant — a UUID or ticket_id from NWN requested under a different company_id
+   (only applies when the tool accepts company_id)
+4. Stress (NWN only) — broadest date range or largest payload the tool supports
 
 ## STRICT PARAMETER RULES — follow these exactly
 1. Use ONLY the parameters listed in the Input Schema above. Do NOT invent parameters
