@@ -469,7 +469,6 @@ def summarize_transcript_for_ticket(
                     },
                 ],
                 "stream": False,
-                "think": False,
                 "options": {"num_ctx": 65536},
             },
             timeout=120.0,

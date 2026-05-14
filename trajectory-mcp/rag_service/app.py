@@ -394,4 +394,8 @@ def ingest_document(req: IngestDocumentRequest):
 if __name__ == "__main__":
     import uvicorn
     port = int(os.getenv("RAG_SERVICE_PORT", "8090"))
+    # Single process — multiple processes would each warm up independently (expensive)
+    # and compete for the same Ollama GPU slot anyway (no throughput gain).
+    # Concurrency comes from uvicorn's async event loop + anyio thread pool (40 threads
+    # by default), which handles 8+ concurrent Assay workers without queuing.
     uvicorn.run("app:app", host="0.0.0.0", port=port, reload=False)

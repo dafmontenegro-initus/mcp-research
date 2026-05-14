@@ -31,15 +31,15 @@ if [ -n "$TOKEN" ] && ! curl -s --max-time 3 "http://localhost:8080/mcp?token=$T
     exit 1
 fi
 
-# ── Launch assay in tmux ───────────────────────────────────────────────────
-echo "[1/1] Starting assay agent…"
+# ── Launch assay in tmux ──────────────────────────────────────────────────────
+echo "Starting assay agent…"
 tmux new-session -d -s assay "cd $SCRIPT_DIR && .venv/bin/python3 runner.py $ARGS; echo ''; echo '[ assay finished — press any key to close ]'; read"
 
 sleep 1
 if tmux has-session -t assay 2>/dev/null; then
-    echo "      ✓ assay running"
+    echo "✓ assay running (attach: tmux attach -t assay)"
 else
-    echo "      ✗ assay failed to start — check venv: python3 -m venv .venv && pip install -r requirements.txt"
+    echo "✗ assay failed to start — check venv: python3 -m venv .venv && pip install -r requirements.txt"
     exit 1
 fi
 

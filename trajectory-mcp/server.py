@@ -138,4 +138,9 @@ if __name__ == "__main__":
             _pidx = sys.argv.index("--port")
             if _pidx + 1 < len(sys.argv):
                 _port = int(sys.argv[_pidx + 1])
+        # Single-process uvicorn — multi-process won't work because FastMCP session
+        # state is in-process. Sync tool handlers run in anyio's default thread pool
+        # (40 threads), which handles 8+ concurrent Assay workers without queuing.
+        # timeout_keep_alive=120 avoids reconnect overhead for long tool calls
+        # (summarize_transcript_for_ticket can take 30-60s on first run).
         mcp.run(transport="streamable-http", host="0.0.0.0", port=_port)
