@@ -30,7 +30,7 @@ Reports land in `findings/YYYY-MM-DD_HHMM/report.md`.
 
 | Component | Model | Purpose |
 |-----------|-------|---------|
-| Test generation & evaluation | `deepseek-r1:32b` | Generates adversarial test cases and evaluates results. DeepSeek-R1's explicit `<think>` reasoning makes its evaluations auditable — you can read exactly why it flagged something. |
+| Test generation & evaluation | `qwen3.6:35b` | Generates adversarial test cases and evaluates results. Qwen3.6's thinking mode makes its evaluations auditable — you can read exactly why it flagged something. Runs on GPU 1 (RTX A6000), leaving GPU 0 free for the MCP summarizer. |
 
 ---
 

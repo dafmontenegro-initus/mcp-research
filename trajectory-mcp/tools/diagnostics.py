@@ -36,8 +36,8 @@ _MODELS = [
         "type": "llm",
         "purpose": "Meeting transcript summarization focused on a specific Wrike ticket",
         "justification": (
-            "Qwen3 30B — strong instruction-following, multilingual EN/ES, fits in one "
-            "A6000 (48 GB VRAM). Runs locally with no external API calls."
+            "Qwen3.6 27B — improved agentic reasoning over Qwen3, multilingual EN/ES, "
+            "fits in one A6000 (48 GB VRAM). Runs locally with no external API calls."
         ),
         "hardware": "RTX A6000 via Ollama",
         "used_by": ["summarize_transcript_for_ticket"],

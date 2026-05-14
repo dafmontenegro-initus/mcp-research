@@ -26,8 +26,8 @@ ollama pull qwen3-embedding:4b-q4_K_M
 
 # Summarization model — required for summarize_transcript_for_ticket
 # (falls back to raw transcript if not pulled)
-# qwen3:30b = MoE 30B/3B-activated, 256K context, 19GB Q4_K_M — think mode disabled at runtime
-ollama pull qwen3:30b
+# qwen3.6:27b — improved agentic reasoning over Qwen3, 256K context, ~17GB Q4_K_M
+ollama pull qwen3.6:27b
 ```
 
 ### 2. MCP server venv
