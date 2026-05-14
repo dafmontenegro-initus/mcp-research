@@ -1,11 +1,16 @@
 from __future__ import annotations
 
+import logging
+import time
+
 import boto3
 import httpx
 from botocore.exceptions import ClientError
 from config import AWS_REGION, S3_BUCKET, RAG_SERVICE_URL, OLLAMA_BASE_URL, OLLAMA_SUMMARIZE_MODEL, validate_company
 from db import get_meet_conn
 from utils import fit_to_limit, MAX_RESPONSE_BYTES
+
+log = logging.getLogger(__name__)
 
 _MAX_TRANSCRIPT_CHARS = 120_000  # ~30K tokens — safe for 32K+ context models
 
@@ -442,50 +447,76 @@ def summarize_transcript_for_ticket(
     transcript_for_llm = full_transcript[:_MAX_TRANSCRIPT_CHARS]
     was_truncated = len(full_transcript) > _MAX_TRANSCRIPT_CHARS
 
-    # Try Ollama
-    try:
-        r = httpx.post(
-            f"{OLLAMA_BASE_URL}/api/chat",
-            json={
-                "model": OLLAMA_SUMMARIZE_MODEL,
-                "messages": [
-                    {
-                        "role": "system",
-                        "content": (
-                            "You are a focused extraction assistant. Given a meeting transcript "
-                            "and a Wrike ticket name, extract ONLY what was said about that ticket. "
-                            "Be brief and factual — 2 to 5 sentences. If the ticket is not "
-                            "mentioned or discussed, say so in one sentence."
-                        ),
-                    },
-                    {
-                        "role": "user",
-                        "content": (
-                            f"Meeting transcript:\n\n{transcript_for_llm}\n\n---\n\n"
-                            f"Extract and summarize ONLY the parts directly relevant to the "
-                            f"Wrike ticket: \"{ticket_title}\".\n"
-                            f"Include: decisions, action items, risks, blockers, status updates."
-                        ),
-                    },
-                ],
-                "stream": False,
-                "options": {"num_ctx": 65536},
+    # Try Ollama. Summarization is an extraction task, not reasoning — disable
+    # thinking explicitly (qwen3 Modelfiles ship with it on, which causes the
+    # model to exhaust num_predict inside <think> on long transcripts and return
+    # empty content). num_predict caps output so a stalled thinking run can't
+    # silently consume the whole context. Retry transient infra failures (Ollama
+    # runner crashes, EOFs, 5xx) before giving up on the raw-transcript fallback.
+    payload = {
+        "model": OLLAMA_SUMMARIZE_MODEL,
+        "messages": [
+            {
+                "role": "system",
+                "content": (
+                    "You are a focused extraction assistant. Given a meeting transcript "
+                    "and a Wrike ticket name, extract ONLY what was said about that ticket. "
+                    "Be brief and factual — 2 to 5 sentences. If the ticket is not "
+                    "mentioned or discussed, say so in one sentence."
+                ),
             },
-            timeout=120.0,
+            {
+                "role": "user",
+                "content": (
+                    f"Meeting transcript:\n\n{transcript_for_llm}\n\n---\n\n"
+                    f"Extract and summarize ONLY the parts directly relevant to the "
+                    f"Wrike ticket: \"{ticket_title}\".\n"
+                    f"Include: decisions, action items, risks, blockers, status updates."
+                ),
+            },
+        ],
+        "stream": False,
+        "think": False,
+        "options": {"num_ctx": 65536, "num_predict": 4096},
+    }
+    fallback_reason = "Ollama unreachable"
+    summary = ""
+    for attempt in range(3):
+        try:
+            r = httpx.post(f"{OLLAMA_BASE_URL}/api/chat", json=payload, timeout=120.0)
+            r.raise_for_status()
+            summary = r.json().get("message", {}).get("content", "").strip()
+            break
+        except httpx.RequestError as e:
+            log.warning("ollama summarize unreachable (attempt %d): %s", attempt + 1, e)
+            fallback_reason = f"Ollama unreachable: {e}"
+        except httpx.HTTPStatusError as e:
+            log.warning("ollama summarize HTTP %d (attempt %d): %s",
+                        e.response.status_code, attempt + 1, e)
+            fallback_reason = f"Ollama HTTP {e.response.status_code}"
+            # Retry only on 5xx — 4xx is a client/payload bug, more attempts won't fix it.
+            if e.response.status_code < 500:
+                break
+        if attempt < 2:
+            time.sleep(2 ** attempt)
+
+    if summary:
+        return {
+            "meeting_uuid": meeting_uuid,
+            "ticket_title": ticket_title,
+            "model": OLLAMA_SUMMARIZE_MODEL,
+            "summary": summary,
+            "transcript_truncated": was_truncated,
+            "source": "ollama",
+        }
+    if summary == "" and fallback_reason == "Ollama unreachable":
+        # All retries succeeded HTTP-wise but returned empty content — num_predict exhausted.
+        log.warning(
+            "ollama summarize returned empty content for meeting=%s ticket=%r (model=%s) — "
+            "raise num_predict or check Ollama runner",
+            meeting_uuid, ticket_title, OLLAMA_SUMMARIZE_MODEL,
         )
-        r.raise_for_status()
-        summary = r.json().get("message", {}).get("content", "").strip()
-        if summary:
-            return {
-                "meeting_uuid": meeting_uuid,
-                "ticket_title": ticket_title,
-                "model": OLLAMA_SUMMARIZE_MODEL,
-                "summary": summary,
-                "transcript_truncated": was_truncated,
-                "source": "ollama",
-            }
-    except Exception:
-        pass  # Ollama unavailable or model not pulled — fall through to raw transcript
+        fallback_reason = "Summarizer returned empty output"
 
     # Fallback: return raw transcript capped to response limit
     max_chars = MAX_RESPONSE_BYTES - 300
@@ -499,11 +530,7 @@ def summarize_transcript_for_ticket(
         "meeting_uuid": meeting_uuid,
         "ticket_title": ticket_title,
         "source": "raw_transcript",
-        "message": (
-            f"Ollama unavailable (model: {OLLAMA_SUMMARIZE_MODEL}). "
-            "Run `ollama pull` with the configured model to enable LLM summarization. "
-            "Raw transcript returned — filter manually."
-        ),
+        "message": f"{fallback_reason} — raw transcript returned, filter manually.",
         "truncated": truncated_response,
         "transcript": chunk,
     }

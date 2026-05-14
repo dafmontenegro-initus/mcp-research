@@ -3,37 +3,29 @@ Main evaluation loop for assay.
 
 Flow:
   1. Initialize MCP session (single client for discovery)
-  2. Discovery phase — collect real IDs (UUIDs, ticket IDs, user emails) from NWN
-  3. For each tool (parallel workers, each with its own MCP session):
-       a. Generate test cases via generator LLM (config.MODEL, Alibaba Cloud)
-       b. Execute each case, evaluate via dual-layer system:
-            Layer 1: generator-as-judge (same model, requester perspective)
-            Layer 2: independent jury (3 judges from DeepSeek AI, Google DeepMind, IBM Research)
-          Final verdict = pass only if BOTH layers approve
-       c. If verdict.interesting -> generate follow-ups (up to MAX_FOLLOWUPS)
+  2. Discovery phase — collect real IDs from NWN
+  3. For each tool (sequential):
+       a. Generate test cases via the generator (qwen3.6:27b)
+       b. For each case: call the tool, then evaluate the result with the
+          same model in evaluator mode (both intent + contract in one pass)
+       c. If verdict.interesting → generate follow-ups (up to MAX_FOLLOWUPS)
   4. Write final report (report.md + findings.json + claude_context.json)
-
-Parallelism: up to MAX_WORKERS tools run simultaneously. Each worker opens its own
-MCP session. Output is buffered per tool and printed atomically on completion.
 """
 from __future__ import annotations
 
 import signal
 import sys
-import threading
-from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any
 
 from rich.console import Console
 from rich.table import Table
 
 import config
-from llm import CombinedVerdict, JuryVerdict, TestCase, Verdict, evaluate_combined, generate_followups, generate_test_cases
+from llm import TestCase, Verdict, evaluate, generate_followups, generate_test_cases
 from mcp_client import MCPClient, Tool
 from report import Report
 
 console = Console()
-_print_lock = threading.Lock()
 
 # Tools that write to external systems — skip to avoid side effects.
 _SKIP_TOOLS = {"ingest_document"}
@@ -41,70 +33,38 @@ _SKIP_TOOLS = {"ingest_document"}
 # Tools used only during discovery — not re-tested in the main loop.
 _DISCOVERY_TOOLS = {"list_companies", "get_rag_health", "get_index_stats", "list_models"}
 
-# layer_consensus display tags
-_LAYER_TAG = {
-    "both_pass": "",
-    "both_fail": " [dim]both[/]",
-    "generator_only_fail": " [dim]gen[/]",
-    "jury_only_fail": " [dim]jury[/]",
-}
 
-# jury consensus display tags
-_CONSENSUS_TAG = {
-    "unanimous": "",
-    "majority": " [dim]2/3[/]",
-}
+def _live(tool_name: str, msg: str) -> None:
+    """Print a tool-prefixed progress line."""
+    console.print(f"[dim cyan]\\[{tool_name}][/] {msg}")
 
 
-def _format_verdict(case: TestCase, verdict: "CombinedVerdict | JuryVerdict | Verdict", duration_ms: int, out: list[str]) -> None:
-    if isinstance(verdict, CombinedVerdict):
-        final = verdict.final_verdict
-        layer_tag = _LAYER_TAG.get(verdict.layer_consensus, "")
-    elif isinstance(verdict, JuryVerdict):
-        final = verdict.final_verdict
-        layer_tag = ""
+def _print_verdict(tool_name: str, case: TestCase, verdict: Verdict, duration_ms: int) -> None:
+    """Print the final verdict line(s) for one test case."""
+    final = verdict.verdict
+    if final == "pass":
+        icon = "[green]✓[/]"
+    elif final == "unreachable":
+        icon = "[yellow]⚙[/]"
     else:
-        final = verdict.verdict
-        layer_tag = ""
+        icon = "[red]✗[/]"
 
-    icon = "[green]✓[/]" if final == "pass" else "[red]✗[/]"
     followup = " [dim](follow-up)[/]" if case.is_followup else ""
     slow = f" [yellow]{duration_ms}ms ⚡[/]" if duration_ms > config.SLOW_MS else f" [dim]{duration_ms}ms[/]"
+    category_tag = f" [dim][{verdict.category}][/]" if final != "pass" else ""
 
-    out.append(f"  {icon} {case.name}{followup}{slow}{layer_tag}")
+    _live(tool_name, f"{icon} {case.name}{followup}{slow}{category_tag}")
+
+    if final == "unreachable":
+        _live(tool_name, f"   [yellow]Infrastructure failure (excluded from findings):[/] [dim]{verdict.summary}[/]")
+        return
 
     if final != "pass":
-        if isinstance(verdict, CombinedVerdict):
-            jury = verdict.jury
-            gen = verdict.generator_judge
-            jury_consensus_tag = _CONSENSUS_TAG.get(jury.consensus, "")
-            category_tag = f" [dim][{verdict.final_category}][/]"
-
-            out.append(f"     [dim]Jurado: {jury.final_summary}{jury_consensus_tag}{category_tag}[/]")
-            gen_icon = "[green]✓[/]" if gen.verdict == "pass" else "[red]✗[/]"
-            out.append(f"     [dim]Generador: {gen_icon} {gen.summary}[/]")
-
-            # Show dissenting jury judges
-            dissenters = [jv for jv in jury.verdicts if jv.verdict != jury.final_verdict]
-            for jv in dissenters:
-                short = jv.model.split(":")[0]
-                out.append(f"     [dim]  ↳ {short}: {jv.verdict} — {jv.summary}[/]")
-        elif isinstance(verdict, JuryVerdict):
-            consensus_tag = _CONSENSUS_TAG.get(verdict.consensus, "")
-            out.append(f"     [dim]{verdict.final_summary}{consensus_tag}[/]")
-            dissenters = [jv for jv in verdict.verdicts if jv.verdict != verdict.final_verdict]
-            for jv in dissenters:
-                short = jv.model.split(":")[0]
-                out.append(f"     [dim]  ↳ {short}: {jv.verdict} — {jv.summary}[/]")
-        else:
-            out.append(f"     [dim]{verdict.summary}[/]")
+        _live(tool_name, f"   [dim]{verdict.summary}[/]")
 
 
 def _discovery_phase(client: MCPClient) -> dict:
-    """
-    Collect real IDs from NWN for use in test cases.
-    Returns a dict the LLM can reference when generating test cases.
-    """
+    """Collect real IDs from NWN for use in test cases."""
     discovery: dict[str, Any] = {"companies": [], "nwn": {}}
 
     r = client.call_tool("list_companies", {})
@@ -116,12 +76,10 @@ def _discovery_phase(client: MCPClient) -> dict:
         meetings = r.raw.get("meetings", [])
         discovery["nwn"]["meeting_uuids"] = [m.get("meeting_uuid") for m in meetings if m]
         discovery["nwn"]["transcript_uuids"] = [
-            m.get("meeting_uuid") for m in meetings
-            if m and m.get("has_transcript")
+            m.get("meeting_uuid") for m in meetings if m and m.get("has_transcript")
         ][:5]
         discovery["nwn"]["synthesis_uuids"] = [
-            m.get("meeting_uuid") for m in meetings
-            if m and m.get("has_synthesis")
+            m.get("meeting_uuid") for m in meetings if m and m.get("has_synthesis")
         ][:5]
 
     r = client.call_tool("list_tasks", {"company_id": "NWN", "limit": 5})
@@ -154,14 +112,11 @@ def _discovery_phase(client: MCPClient) -> dict:
     return discovery
 
 
-def test_tool(client: MCPClient, tool: Tool, discovery: dict, report: Report) -> list[str]:
-    """
-    Run all test cases for one tool. Returns buffered output lines (Rich markup)
-    for atomic printing by the caller — never writes to the shared console directly.
-    """
-    out: list[str] = []
+def test_tool(client: MCPClient, tool: Tool, discovery: dict, report: Report) -> None:
+    """Run all test cases for one tool, printing progress live."""
     companies = discovery.get("companies", ["NWN"])
 
+    _live(tool.name, "[dim]Generating test cases…[/]")
     try:
         cases = generate_test_cases(
             tool_name=tool.name,
@@ -171,23 +126,24 @@ def test_tool(client: MCPClient, tool: Tool, discovery: dict, report: Report) ->
             discovery=discovery,
         )
     except Exception as e:
-        out.append(f"  [red]LLM error generating test cases:[/]")
-        for line in str(e).splitlines():
-            out.append(f"  [dim]{line}[/]")
-        return out
+        _live(tool.name, f"[red]LLM error generating test cases: {e}[/]")
+        return
 
-    out.append(f"  Generated [bold]{len(cases)}[/] test cases")
+    _live(tool.name, f"Generated [bold]{len(cases)}[/] test cases")
 
     followup_budget = config.MAX_FOLLOWUPS
     i = 0
     while i < len(cases):
         case = cases[i]
         i += 1
+        total = len(cases)
 
+        _live(tool.name, f"([bold]{i}/{total}[/]) {case.name} [dim]— calling tool…[/]")
         call = client.call_tool(tool.name, case.arguments)
 
+        _live(tool.name, f"([bold]{i}/{total}[/]) {case.name} [dim]— evaluating…[/]")
         try:
-            combined = evaluate_combined(
+            verdict = evaluate(
                 tool_name=tool.name,
                 case=case,
                 result=call.raw,
@@ -196,36 +152,36 @@ def test_tool(client: MCPClient, tool: Tool, discovery: dict, report: Report) ->
                 error_message=call.error_message,
             )
         except Exception as e:
-            out.append(f"  [red]Evaluation error: {e}[/]")
-            combined = Verdict(
-                verdict="fail", severity="minor", category="error_handling",
-                summary="Evaluation failed", detail=str(e), interesting=False,
+            _live(tool.name, f"([bold]{i}/{total}[/]) [red]Evaluation error: {e}[/]")
+            # Route to infrastructure_events, not findings — an evaluator crash
+            # is an infra problem, not a bug in the system under test. Mirrors
+            # the contract that llm.evaluate() honors on its own failure paths.
+            verdict = Verdict(
+                verdict="unreachable", severity="info", category="infrastructure",
+                summary=f"Evaluator raised: {str(e)[:80]}",
+                detail=str(e), interesting=False,
             )
 
-        _format_verdict(case, combined, call.duration_ms, out)
-        report.record(tool.name, case, call.raw, call.duration_ms, combined)
+        _print_verdict(tool.name, case, verdict, call.duration_ms)
+        report.record(tool.name, case, call.raw, call.duration_ms, verdict)
 
-        interesting = combined.interesting if isinstance(combined, CombinedVerdict) else combined.interesting
-        if interesting and followup_budget > 0:
+        is_infra = verdict.verdict == "unreachable"
+        if verdict.interesting and followup_budget > 0 and not is_infra:
             try:
-                followups = generate_followups(tool.name, case, call.raw, combined)
+                followups = generate_followups(tool.name, case, call.raw, verdict)
                 followups = followups[:followup_budget]
                 cases.extend(followups)
                 followup_budget -= len(followups)
                 if followups:
-                    out.append(f"  [dim]-> {len(followups)} follow-up(s) queued[/]")
-            except Exception:
-                pass
-
-    return out
+                    _live(tool.name, f"[dim]-> {len(followups)} follow-up(s) queued[/]")
+            except Exception as e:
+                _live(tool.name, f"[dim yellow]follow-up generation failed: {e}[/]")
 
 
 def run(tool_filter: str | None = None, dry_run: bool = False) -> None:
     console.rule("[bold magenta]assay[/] — autonomous QA agent")
-    console.print(f"  Generator + Layer 1 judge: [bold]{config.MODEL}[/] [dim](Alibaba Cloud)[/]")
-    judges_str = " · ".join(f"[bold]{m}[/]" for m in config.JUDGE_MODELS)
-    console.print(f"  Layer 2 jury ({len(config.JUDGE_MODELS)}): {judges_str} [dim](quorum {config.JUDGE_QUORUM}/{len(config.JUDGE_MODELS)})[/]")
-    console.print(f"  [dim]Verdict: pass only if BOTH layers approve[/]")
+    console.print(f"  Evaluator: [bold]{config.MODEL}[/] [dim](Alibaba Cloud, single-evaluator: intent + contract in one pass)[/]")
+    console.print(f"  [dim]Binary pass/fail; category explains failures.[/]")
 
     with MCPClient() as client:
         with console.status("Initializing MCP session..."):
@@ -256,10 +212,7 @@ def run(tool_filter: str | None = None, dry_run: bool = False) -> None:
         and t.name not in _DISCOVERY_TOOLS
         and (tool_filter is None or t.name == tool_filter)
     ]
-    console.print(
-        f"\nTesting [bold]{len(tools_to_test)}[/] tools "
-        f"([bold]{config.MAX_WORKERS}[/] parallel workers)...\n"
-    )
+    console.print(f"\nTesting [bold]{len(tools_to_test)}[/] tools (sequential)…\n")
 
     def _handle_interrupt(sig, frame):
         console.print("\n\n[yellow]Interrupted — writing partial report...[/]")
@@ -269,24 +222,12 @@ def run(tool_filter: str | None = None, dry_run: bool = False) -> None:
 
     signal.signal(signal.SIGINT, _handle_interrupt)
 
-    def _worker(tool: Tool) -> tuple[Tool, list[str]]:
+    for idx, tool in enumerate(tools_to_test, 1):
+        console.rule(f"[bold cyan]{tool.name}[/] [dim]({idx}/{len(tools_to_test)})[/]")
         with MCPClient() as worker_client:
             worker_client.initialize()
-            output = test_tool(worker_client, tool, discovery, report)
-        return tool, output
-
-    completed = 0
-    with ThreadPoolExecutor(max_workers=config.MAX_WORKERS) as executor:
-        futures = {executor.submit(_worker, tool): tool for tool in tools_to_test}
-        for future in as_completed(futures):
-            tool, output_lines = future.result()
-            completed += 1
-            with _print_lock:
-                console.rule(f"[bold cyan]{tool.name}[/]")
-                for line in output_lines:
-                    console.print(line)
-                console.print(f"  [dim]({completed}/{len(tools_to_test)} complete)[/]")
-            report.flush()
+            test_tool(worker_client, tool, discovery, report)
+        report.flush()
 
     console.rule("[bold]Finalizing report[/]")
     with console.status("Writing report..."):
