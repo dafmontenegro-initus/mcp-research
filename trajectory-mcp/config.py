@@ -16,6 +16,12 @@ BAMBOOHR_BIRTHDAYS_URL = os.getenv("BAMBOOHR_BIRTHDAYS_URL", "")
 BAMBOOHR_ANNIVERSARIES_URL = os.getenv("BAMBOOHR_ANNIVERSARIES_URL", "")
 BAMBOOHR_HOLIDAYS_URL = os.getenv("BAMBOOHR_HOLIDAYS_URL", "")
 
+# GitHub: fine-grained read-only PAT scoped to the org repos the caller can see.
+# Empty by default — github.* tools return {"error": ...} if missing, but the
+# server still boots so the rest of the stack works without it configured.
+GITHUB_TOKEN = os.getenv("GITHUB_TOKEN", "")
+GITHUB_API_BASE = os.getenv("GITHUB_API_BASE", "https://api.github.com")
+
 MEET_DB = {
     "host": os.getenv("MEET_DB_HOST"),
     "user": os.getenv("MEET_DB_USER"),

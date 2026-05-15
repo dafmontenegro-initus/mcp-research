@@ -50,11 +50,13 @@ trajectory-mcp is a read-only MCP server that exposes data from:
 - Zoom meetings (transcripts, participants, chat, summaries)
 - Wrike project management (tasks, timelines, attachments)
 - BambooHR (time off, birthdays, anniversaries, holidays)
+- GitHub (repos, commits, pull requests via a single fine-grained PAT)
 - Semantic search via RAG (ChromaDB + Ollama embeddings)
 - Diagnostics (RAG health, index stats, model inventory)
 
 It is a multi-tenant system: most tools require a `company_id` to scope the query
-to a specific client. The system serves ~31 companies.
+to a specific client. The system serves ~31 companies. GitHub tools are an
+exception — they use a server-side PAT instead of company_id (see below).
 
 ## NWN — primary stress-test target
 NWN is by far the largest client. It has:
@@ -108,6 +110,28 @@ get_time_off, get_birthdays, get_anniversaries return entries that OVERLAP the
 requested window. An entry that starts before window_start but extends into the window
 WILL be returned — this is correct overlap behavior, not a date filtering bug.
 
+## GitHub tools — org-scoped, single PAT
+list_repos, list_commits, get_commit, list_pull_requests are NOT multi-tenant.
+They use a server-held fine-grained PAT scoped to the org repos the PAT owner
+can see. NO company_id parameter exists; passing one is correctly rejected.
+
+CRITICAL:
+- `repo` parameter is always "owner/name" (e.g. "initus/mcp-research"). A bare
+  name like "mcp-research" without the owner prefix is invalid input and will
+  be rejected — that rejection is CORRECT, not a bug.
+- `sha` accepts both short (≥7 chars) and full 40-char form. A clearly invalid
+  sha (random string, wrong length, non-hex) returning 404/error is CORRECT.
+- `since` / `until` are ISO 8601 strings ("2026-05-15" or "2026-05-15T00:00:00Z").
+  Bare years or "yesterday" are invalid — rejection is CORRECT.
+- `state` in list_pull_requests must be "open", "closed", or "all". Any other
+  string returns {"error": ...} — CORRECT behavior.
+- An empty `list_repos` response can simply mean the PAT has not been granted
+  org access yet (pending admin approval) — not a bug, an expected state.
+- 403 rate limit / 401 token-invalid responses are INFRASTRUCTURE issues, not
+  tool defects — they belong in infrastructure_events, not findings.
+- The discovery context provides real github.repos / github.sample_commits /
+  github.authors when available; use them for realistic tests.
+
 ## Your job
 Generate adversarial but realistic test cases. Think like a QA engineer who
 wants to find bugs, not just confirm happy paths. Specifically look for:
@@ -140,6 +164,13 @@ impossible (e.g. no `limit` parameter → skip param-shape boundaries).
    (use a value larger than any realistic transcript, e.g. 10_000_000). Expected
    behavior: clear error or empty chunk — not a silent wraparound or crash.
 
+4. Malformed resource references — for tools that take an identifier like a
+   repo path ("owner/name"), commit sha, or PR state: generate cases with the
+   identifier mangled in plausible ways (repo without owner prefix, sha that's
+   non-hex or wrong length, state with an invented enum value, ISO date written
+   as "yesterday" or "2026-13-40"). Expected behavior: clear {"error": ...},
+   never a crash or silently-empty success.
+
 Always respond with valid JSON only. No markdown, no explanation outside JSON."""
 
 
@@ -160,10 +191,12 @@ trajectory-mcp is a read-only MCP server exposing:
 - Zoom meetings (transcripts, participants, chat, summaries)
 - Wrike project management (tasks, timelines, attachments)
 - BambooHR (time off, birthdays, anniversaries, holidays) — Trajectory-wide, NO company_id
+- GitHub (repos, commits, pull requests) — org-scoped via server-held PAT, NO company_id
 - Semantic search via RAG (ChromaDB + Ollama embeddings)
 - Diagnostics (RAG health, index stats, model inventory)
 
-Multi-tenant: most tools scope data by company_id. ~31 companies served.
+Multi-tenant: most tools scope data by company_id. ~31 companies served. GitHub
+tools are the exception — they use a single PAT and ignore company_id.
 
 ## Verdict rules — binary, no ambiguity
 - verdict=pass: tool did EXACTLY what was requested AND complies with its documented
@@ -196,6 +229,27 @@ Multi-tenant: most tools scope data by company_id. ~31 companies served.
 - Invalid/empty company_id on multi-tenant tools currently falls through to "not found"
   responses (validate_company is a documented no-op). Still flag it as correctness=minor
   — don't deliberate on whether validation "should" exist; the test's expectation is the contract.
+
+## GitHub-specific domain knowledge — do NOT flag these as failures
+- list_repos returning an empty list or only the PAT owner's personal repo is
+  CORRECT when the org access request is pending admin approval. Not a bug.
+- Any tool returning {"error": "GITHUB_TOKEN not configured on the server"}:
+  infrastructure_failure, route to unreachable verdict (NOT a tool defect).
+- 401 "auth failed" / 403 "rate limit exceeded": infrastructure_failure, route
+  to unreachable verdict. The tool's HTTP layer is working correctly.
+- "repo or resource not found" / 404 for invented repo names, invalid shas,
+  or repos the PAT cannot see: CORRECT rejection of invalid or out-of-scope
+  input -> verdict=pass.
+- list_pull_requests rejecting state="invented_state" with "use open, closed,
+  or all": CORRECT input validation -> verdict=pass.
+- `repo` parameter is "owner/name". Rejecting a bare name like "mcp-research"
+  (no slash, no owner) is CORRECT -> verdict=pass.
+- An ISO date string like "yesterday" or "2026-13-40" being rejected by the
+  GitHub API and surfaced as an error: CORRECT -> verdict=pass.
+- Truncated patch in get_commit (per-file > 50KB) with patch_truncated=true:
+  documented behavior, not a data_quality bug -> verdict=pass.
+- short sha and full 40-char sha both produce the same commit detail —
+  consistent behavior, not a bug.
 
 ## Important: prompt-side truncation is NOT a tool bug
 The Response payload below may end with a "[NOTE: assay truncated this representation

@@ -21,6 +21,9 @@ from tools.wrike import (
     search_tasks, get_task_attachment_content, ingest_document,
     get_project_timeline,
 )
+from tools.github import (
+    list_repos, list_commits, get_commit, list_pull_requests,
+)
 
 mcp = FastMCP(
     "Trajectory",
@@ -123,6 +126,10 @@ _register(search_tasks)
 _register(get_task_attachment_content)
 _register(ingest_document)
 _register(get_project_timeline)
+_register(list_repos)
+_register(list_commits)
+_register(get_commit)
+_register(list_pull_requests)
 _register(get_rag_health)
 _register(get_index_stats)
 _register(list_models)

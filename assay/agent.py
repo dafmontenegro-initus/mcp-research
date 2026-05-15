@@ -109,6 +109,38 @@ def _discovery_phase(client: MCPClient) -> dict:
         if not rag_ok:
             console.print("  [yellow]⚠ RAG service DOWN — search tools will fail[/]")
 
+    # GitHub: fetch real repos and a sample of recent commits per repo so the
+    # generator can mix real ids with adversarial inputs (e.g. real repo +
+    # invented sha, real sha + invented repo). If list_repos returns empty or
+    # errors (GITHUB_TOKEN not set, or org approval pending), the github tools
+    # still get tested with fully invented inputs — the prompt covers that.
+    discovery["github"] = {"repos": [], "sample_commits": [], "authors": []}
+    r = client.call_tool("list_repos", {"limit": 10})
+    if not r.is_error and isinstance(r.raw, dict):
+        repos = r.raw.get("repos", []) or []
+        repo_names = [rep.get("full_name") for rep in repos if rep.get("full_name")][:5]
+        discovery["github"]["repos"] = repo_names
+
+        seen_authors: set[str] = set()
+        # Sample commits from up to 2 repos so the generator has real shas to play with.
+        for repo_name in repo_names[:2]:
+            r2 = client.call_tool("list_commits", {"repo": repo_name, "limit": 5})
+            if r2.is_error or not isinstance(r2.raw, dict):
+                continue
+            for c in r2.raw.get("commits", []) or []:
+                full_sha = c.get("full_sha")
+                if full_sha:
+                    discovery["github"]["sample_commits"].append({
+                        "repo": repo_name,
+                        "sha": full_sha,
+                        "author_email": c.get("author_email"),
+                    })
+                email = c.get("author_email")
+                name = c.get("author_name")
+                if email and email not in seen_authors:
+                    seen_authors.add(email)
+                    discovery["github"]["authors"].append({"name": name, "email": email})
+
     return discovery
 
 
