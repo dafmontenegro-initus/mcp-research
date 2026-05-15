@@ -7,8 +7,12 @@ from pathlib import Path
 from dotenv import load_dotenv
 load_dotenv(Path(__file__).parent.parent / ".env")
 
+import logging
+import time
 from contextlib import asynccontextmanager
 from typing import Optional
+
+log = logging.getLogger(__name__)
 
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
@@ -148,19 +152,25 @@ def search_tasks(req: SearchTasksRequest):
         return {"error": sync_result["error"], "results": []}
 
     # 2. Embed the query
+    t0 = time.perf_counter()
     try:
         query_embedding = embedder.embed(req.query)
     except Exception as e:
         return {"error": f"Embedding failed: {e}", "results": []}
+    embed_ms = int((time.perf_counter() - t0) * 1000)
 
     # 3. Search ChromaDB — fetch more candidates than needed for reranking
     collection = get_collection(f"wrike_{req.environment}")
+    t1 = time.perf_counter()
     candidates = search(
         collection,
         query_embedding,
         where={"company_id": req.company_id},
         n_results=min(50, max(req.top_k * 5, 20)),
     )
+    chroma_query_ms = int((time.perf_counter() - t1) * 1000)
+    log.info("search_tasks: embed_ms=%d chroma_query_ms=%d company=%s",
+             embed_ms, chroma_query_ms, req.company_id)
 
     if not candidates:
         return {"results": [], "message": "No results found. The index may be empty for this company."}
@@ -189,7 +199,8 @@ def search_tasks(req: SearchTasksRequest):
             "excerpt": hit.get("document", "")[:500],
         })
 
-    return {"results": results, "total_candidates": len(candidates)}
+    return {"results": results, "total_candidates": len(candidates),
+            "embed_ms": embed_ms, "chroma_query_ms": chroma_query_ms}
 
 
 # ── /search/meetings ─────────────────────────────────────────────────────────
@@ -203,18 +214,24 @@ def search_meetings(req: SearchMeetingsRequest):
     if "error" in sync_result:
         return {"error": sync_result["error"], "results": []}
 
+    t0 = time.perf_counter()
     try:
         query_embedding = embedder.embed(req.query)
     except Exception as e:
         return {"error": f"Embedding failed: {e}", "results": []}
+    embed_ms = int((time.perf_counter() - t0) * 1000)
 
     collection = get_collection(f"meetings_{req.environment}")
+    t1 = time.perf_counter()
     candidates = search(
         collection,
         query_embedding,
         where={"company_id": req.company_id},
         n_results=min(50, max(req.top_k * 5, 20)),
     )
+    chroma_query_ms = int((time.perf_counter() - t1) * 1000)
+    log.info("search_meetings: embed_ms=%d chroma_query_ms=%d company=%s",
+             embed_ms, chroma_query_ms, req.company_id)
 
     if not candidates:
         return {"results": [], "message": "No results found. The meetings index may be empty."}
@@ -240,7 +257,8 @@ def search_meetings(req: SearchMeetingsRequest):
             "excerpt": hit.get("document", "")[:500],
         })
 
-    return {"results": results, "total_candidates": len(candidates)}
+    return {"results": results, "total_candidates": len(candidates),
+            "embed_ms": embed_ms, "chroma_query_ms": chroma_query_ms}
 
 
 # ── /stats/{company_id} ──────────────────────────────────────────────────────

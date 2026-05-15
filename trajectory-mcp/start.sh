@@ -17,11 +17,20 @@ COLS=$(tput cols 2>/dev/null || echo 200)
 LINES=$(tput lines 2>/dev/null || echo 50)
 
 # ── RAG service ───────────────────────────────────────────────────────────────
+# Read WARMUP_COMPANIES from .env so the status line reflects the actual
+# warmup workload — empty means no warmup, names listed get warmed in order.
+WARMUP=$(grep '^WARMUP_COMPANIES=' .env 2>/dev/null | cut -d= -f2-)
+if [ -n "$WARMUP" ]; then
+    WAIT_MSG="      waiting (warming up: $WARMUP — may take several minutes per company)"
+else
+    WAIT_MSG="      waiting (no warmup configured — should be quick)"
+fi
+
 echo "[1/2] Starting RAG service (port 8090)..."
 tmux new-session -d -s rag -x "$COLS" -y "$LINES" \
     "cd $SCRIPT_DIR && rag_service/.venv/bin/python3 rag_service/app.py"
 
-echo -n "      waiting (cold start may take ~10 min for NWN warmup)"
+echo -n "$WAIT_MSG"
 RAG_UP=0
 for i in $(seq 1 150); do
     sleep 4

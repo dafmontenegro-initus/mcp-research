@@ -3,9 +3,10 @@
 assay — autonomous QA agent for trajectory-mcp.
 
 Usage:
-  python3 runner.py                  # full run (all tools)
-  python3 runner.py --tool list_meetings   # test one specific tool
-  python3 runner.py --dry-run        # connect, list tools, then stop (no LLM)
+  python3 runner.py                                  # full run (all tools)
+  python3 runner.py --tool list_meetings             # one tool
+  python3 runner.py --tool list_meetings,find_task   # comma-separated subset
+  python3 runner.py --dry-run                        # connect, list tools, then stop
 """
 import sys
 from agent import run

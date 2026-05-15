@@ -68,6 +68,8 @@ def list_meetings(
     limit             : Maximum meetings to return. If omitted, returns all matching rows.
                         Use date filters to bound the query before omitting this.
     """
+    if not company_id:
+        return {"error": "company_id is required and cannot be empty"}
     err = validate_company(company_id)
     if err:
         return {"error": err}
@@ -146,6 +148,8 @@ def get_meeting_details(meeting_uuids: list[str], company_id: str) -> dict:
     meeting_uuids : List of meeting UUIDs obtained from list_meetings.
     company_id    : Company identifier (used for tenant isolation).
     """
+    if not company_id:
+        return {"error": "company_id is required and cannot be empty"}
     err = validate_company(company_id)
     if err:
         return {"error": err}
@@ -203,6 +207,8 @@ def get_meeting_transcript(meeting_uuid: str, company_id: str, offset: int = 0) 
     offset       : Character offset to start reading from (default 0). Use next_offset
                    from a previous truncated response to page through long transcripts.
     """
+    if not company_id:
+        return {"error": "company_id is required and cannot be empty"}
     err = validate_company(company_id)
     if err:
         return {"error": err}
@@ -225,6 +231,8 @@ def get_meeting_transcript(meeting_uuid: str, company_id: str, offset: int = 0) 
 
     full_text = "\n\n".join(parts)
     total_chars = len(full_text)
+    if offset < 0 or offset > total_chars:
+        return {"error": f"offset {offset} out of range [0, {total_chars}]"}
     chunk = full_text[offset:]
 
     # Trim chunk to fit within the response size limit (~900 KB encoded)
@@ -271,7 +279,37 @@ def search_meetings(query: str, company_id: str, limit: int = 10) -> dict:
     query      : Natural language search query (e.g. "budget approval", "deployment risk").
     company_id : Company identifier — results are isolated to this tenant.
     limit      : Maximum results to return (default 10).
+
+    ## Inferring meeting context the snippet doesn't show
+    Each result contains only `rank`, `meeting_uuid`, and a short `excerpt`.
+    Date, host, participants, full synthesis, and decisions are NOT included.
+    Use the meeting_uuids as keys into the other meetings tools:
+      - get_meeting_details(meeting_uuids=[...], company_id=...) for AI synthesis
+        + dates + participant emails — preferred when has_synthesis=true.
+      - get_meeting_participants(meeting_uuid=..., company_id=...) when the
+        question is about who attended.
+      - get_meeting_transcript(meeting_uuid=..., company_id=...) only when
+        verbatim quoting is needed.
+
+    Worked example: user asks "what did we decide about the Wrike API
+    integration across last week's standups?"
+      1. search_meetings(query="Wrike API integration", company_id=X, limit=10)
+         → top meeting_uuids by relevance
+      2. get_meeting_details(meeting_uuids=<those>, company_id=X)
+         → filter to last week's date range, read synthesized_meeting for decisions
+
+    Worked example: user asks "which team members touched ticket NWN-1234?"
+      1. search_meetings(query="NWN-1234", company_id="NWN", limit=10)
+         → meetings where the ticket was discussed
+      2. get_meeting_participants on each meeting_uuid → union the email lists.
+      Cross-check with search_tasks(query="NWN-1234", company_id="NWN") +
+      get_task_details to pick up commenters who didn't attend meetings.
+
+    Empty results are not "no record" — broaden the query (synonyms, project
+    code name, related feature) before concluding the topic wasn't discussed.
     """
+    if not company_id:
+        return {"error": "company_id is required and cannot be empty"}
     err = validate_company(company_id)
     if err:
         return {"error": err}
@@ -304,6 +342,8 @@ def get_meeting_participants(meeting_uuid: str, company_id: str) -> dict:
     """
     import json as _json
 
+    if not company_id:
+        return {"error": "company_id is required and cannot be empty"}
     err = validate_company(company_id)
     if err:
         return {"error": err}
@@ -366,6 +406,8 @@ def get_meeting_chat(meeting_uuid: str, company_id: str) -> dict:
     meeting_uuid : UUID of the meeting (from list_meetings).
     company_id   : Company identifier (used for tenant isolation).
     """
+    if not company_id:
+        return {"error": "company_id is required and cannot be empty"}
     err = validate_company(company_id)
     if err:
         return {"error": err}
@@ -422,6 +464,8 @@ def summarize_transcript_for_ticket(
     ticket_title  : Title of the Wrike ticket to focus on (e.g. "Deploy new API v2").
     company_id    : Company identifier (used for tenant isolation and S3 path).
     """
+    if not company_id:
+        return {"error": "company_id is required and cannot be empty"}
     err = validate_company(company_id)
     if err:
         return {"error": err}
@@ -561,6 +605,8 @@ def get_meeting_ticket_links(
     company_id   : Company identifier — results are isolated to this tenant.
     limit        : Maximum ticket results to return (default 10).
     """
+    if not company_id:
+        return {"error": "company_id is required and cannot be empty"}
     err = validate_company(company_id)
     if err:
         return {"error": err}

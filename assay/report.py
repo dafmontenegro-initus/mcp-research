@@ -116,6 +116,8 @@ class Report:
             stats[verdict.verdict] = stats.get(verdict.verdict, 0) + 1
             stats["total_ms"] += duration_ms
             stats["max_ms"] = max(stats["max_ms"], duration_ms)
+            if case.is_followup:
+                stats["followups"] += 1
 
     def flush(self) -> None:
         with self._lock:
@@ -193,19 +195,55 @@ class Report:
 
     def _write_markdown(self) -> Path:
         now = datetime.now().strftime("%Y-%m-%d %H:%M")
+        started = datetime.fromtimestamp(self._started_at).strftime("%Y-%m-%d %H:%M")
         summary = self._build_summary_dict()
         elapsed = int(time.time() - self._started_at)
-        lines: list[str] = []
+        elapsed_h = elapsed // 3600
+        elapsed_m = (elapsed % 3600) // 60
+        duration_str = f"{elapsed_h}h {elapsed_m}m" if elapsed_h else f"{elapsed_m}m {elapsed % 60}s"
 
+        # ── Run Manifest (executive summary at top — designed for Opus consumption) ──
+        # Rank top severities for quick scan.
+        severity_rank = {"critical": 0, "major": 1, "minor": 2, "info": 3}
+        non_pass = [f for f in self._findings if f.verdict == "fail"]
+        top_findings = sorted(non_pass, key=lambda f: (severity_rank.get(f.severity, 4), f.tool))[:5]
+        critical_n = sum(1 for f in non_pass if f.severity == "critical")
+        major_n = sum(1 for f in non_pass if f.severity == "major")
+        minor_n = sum(1 for f in non_pass if f.severity == "minor")
+        # Category histogram across all fails — surfaces recurring patterns.
+        from collections import Counter
+        category_counts = Counter(f.category for f in non_pass)
+        category_str = ", ".join(f"{cat}={n}" for cat, n in category_counts.most_common()) or "(none)"
+        max_followups = getattr(config, "MAX_FOLLOWUPS", 3)
+
+        lines: list[str] = []
         lines += [
             f"# Assay QA Report — {now}",
             "",
-            f"**Duration:** {elapsed // 60}m {elapsed % 60}s  |  "
-            f"**Tools tested:** {summary['tools_tested']}  |  "
-            f"**Total tests:** {summary['total_tests']}",
+            "## Run Manifest",
             "",
-            f"**Evaluator:** `{config.MODEL}` *(single-evaluator: intent + contract in one pass)*",
+            f"- **Started:** {started}  →  **Finished:** {now}  ({duration_str})",
+            f"- **Evaluator:** `{config.MODEL}` (single-evaluator: intent + contract in one pass, think=True for both generation and evaluation)",
+            f"- **Tools tested:** {summary['tools_tested']}  |  **Total tests:** {summary['total_tests']}  (follow-up budget: {max_followups}/tool)",
+            f"- **Verdicts:** ✓ {summary['pass']} pass, ✗ {summary['fail']} fail"
+            + (f", ⚙ {summary['infrastructure_events']} infrastructure events (excluded from findings)" if summary["infrastructure_events"] else ""),
+            f"- **Failures by severity:** critical={critical_n}, major={major_n}, minor={minor_n}",
+            f"- **Failures by category:** {category_str}",
             "",
+        ]
+        if top_findings:
+            lines += ["### Top findings (start here)", ""]
+            for i, f in enumerate(top_findings, 1):
+                followup_tag = " *(follow-up)*" if f.is_followup else ""
+                lines.append(
+                    f"{i}. **[{f.severity}]** `{f.tool}` — {f.summary} "
+                    f"`[{f.category}]`{followup_tag}"
+                )
+            lines.append("")
+        lines += ["---", ""]
+
+        # ── Per-tool summary table at top too ─────────────────────────────────
+        lines += [
             "| Verdict | Count |",
             "|---------|-------|",
             f"| ✓ Pass | {summary['pass']} |",
@@ -236,24 +274,30 @@ class Report:
                 lines += _reasoning_block(f.reasoning_chain)
 
         # ── Tool-by-tool ────────────────────────────────────────────────────────
+        # `Tests` shows "initial+followups=total" so the total never surprises
+        # a reader who saw "Generated N test cases" in the live log.
         lines += ["## Tool-by-Tool Results", ""]
-        lines += ["| Tool | Tests | ✓ | ✗ | ⚙Infra | Avg ms | Max ms |"]
-        lines += ["|------|-------|---|---|--------|--------|--------|"]
+        lines += ["| Tool | Tests (init+followups) | ✓ | ✗ | ⚙Infra | Avg ms | Max ms |"]
+        lines += ["|------|------------------------|---|---|--------|--------|--------|"]
         for tool, s in sorted(self._tool_stats.items()):
             avg = s["total_ms"] // s["total"] if s["total"] else 0
+            fu = s.get("followups", 0)
+            initial = s["total"] - fu
+            tests_cell = f"{s['total']} ({initial}+{fu})" if fu else str(s["total"])
             lines.append(
-                f"| {tool} | {s['total']} | {s['pass']} | {s['fail']} | "
+                f"| {tool} | {tests_cell} | {s['pass']} | {s['fail']} | "
                 f"{s.get('infrastructure', 0)} | {avg} | {s['max_ms']} |"
             )
         lines.append("")
 
-        # ── All findings ────────────────────────────────────────────────────────
-        non_pass = [f for f in self._findings if f.verdict == "fail"]
-        non_pass.sort(key=self._priority_rank)
-        if non_pass:
-            lines += ["## All Findings", ""]
+        # ── Other findings (excludes critical/security already shown above) ────
+        critical_ids = {id(f) for f in critical}
+        other = [f for f in self._findings if f.verdict == "fail" and id(f) not in critical_ids]
+        other.sort(key=self._priority_rank)
+        if other:
+            lines += ["## Other Findings", ""]
             current_tool = None
-            for f in non_pass:
+            for f in other:
                 if f.tool != current_tool:
                     lines += [f"### {f.tool}", ""]
                     current_tool = f.tool
@@ -315,8 +359,11 @@ class Report:
 
         tool_health = {}
         for tool, s in self._tool_stats.items():
+            fu = s.get("followups", 0)
             tool_health[tool] = {
                 "tests": s["total"],
+                "tests_initial": s["total"] - fu,
+                "tests_followups": fu,
                 "pass": s["pass"],
                 "fail": s["fail"],
                 "infrastructure_events": s.get("infrastructure", 0),
@@ -355,17 +402,21 @@ class Report:
 def _empty_stats() -> dict:
     return {
         "total": 0, "pass": 0, "fail": 0,
+        "followups": 0,
         "total_ms": 0, "max_ms": 0,
         "infrastructure": 0,
     }
 
 
+_REASONING_EXCERPT_CHARS = 5000
+
+
 def _reasoning_block(reasoning: str) -> list[str]:
     if not reasoning:
         return []
-    excerpt = reasoning[:1000]
-    if len(reasoning) > 1000:
-        excerpt += "…"
+    excerpt = reasoning[:_REASONING_EXCERPT_CHARS]
+    if len(reasoning) > _REASONING_EXCERPT_CHARS:
+        excerpt += f"\n\n…[truncated, full chain is {len(reasoning)} chars — see findings.json]"
     return [
         "<details><summary>evaluator reasoning</summary>",
         "",

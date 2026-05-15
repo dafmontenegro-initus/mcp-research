@@ -117,6 +117,29 @@ wants to find bugs, not just confirm happy paths. Specifically look for:
 - Performance degradation under real NWN load
 - Edge cases the developer didn't think about
 
+## Required adversarial categories — emit when applicable to the tool
+You MUST include at least one test from each category below for every tool whose
+signature supports it. Skip a category only when the tool's signature makes it
+impossible (e.g. no `limit` parameter → skip param-shape boundaries).
+
+1. Cross-tenant isolation — for any multi-tenant tool that accepts an opaque ID
+   (meeting_uuid, ticket_id, etc.) AND a company_id: pass a known ID belonging to
+   one tenant together with a DIFFERENT company_id. Expected behavior: empty /
+   not-found, NEVER the other tenant's data. Use the discovery context to pick a
+   valid NWN UUID and pair it with a smaller company (e.g. company_id="DAI").
+   Name the case `security_cross_tenant_<tool>` and tag the intent clearly so the
+   evaluator treats data leakage as severity=critical, category=security.
+
+2. Param-shape boundaries — for any tool with a `limit` parameter, generate cases
+   with limit=0, limit=-1, and limit=10000 (or larger than the underlying dataset).
+   Expected behavior: graceful — empty list, error, or cap to a sane maximum.
+   A stacktrace, a hang, or a silently-ignored value is a bug.
+
+3. Offset/pagination boundaries — for tools with an `offset` parameter (currently
+   get_meeting_transcript): generate cases with offset=-1 and offset=<total_chars+1>
+   (use a value larger than any realistic transcript, e.g. 10_000_000). Expected
+   behavior: clear error or empty chunk — not a silent wraparound or crash.
+
 Always respond with valid JSON only. No markdown, no explanation outside JSON."""
 
 
@@ -170,6 +193,9 @@ Multi-tenant: most tools scope data by company_id. ~31 companies served.
 - Time-off/birthday/anniversary entries starting before window_start -> overlap
   semantics: entries that START before but EXTEND INTO the window are returned -> verdict=pass
 - get_company_holidays returning the current week's holidays -> default window is correct
+- Invalid/empty company_id on multi-tenant tools currently falls through to "not found"
+  responses (validate_company is a documented no-op). Still flag it as correctness=minor
+  — don't deliberate on whether validation "should" exist; the test's expectation is the contract.
 
 ## Important: prompt-side truncation is NOT a tool bug
 The Response payload below may end with a "[NOTE: assay truncated this representation
@@ -390,9 +416,9 @@ def generate_test_cases(
     other_companies = [c for c in companies if c != "NWN"][:5]
 
     prompt = f"""Generate 3 to 5 test cases for the following MCP tool, scaled
-to the tool's parameter complexity (fewer for simple 2-param tools, more for
-tools with many parameters and richer behavior). The follow-up mechanism will
-deepen coverage on interesting findings — do not pad with redundant cases.
+to the tool's parameter complexity (closer to 3 for simple 2-param tools, closer
+to 5 for tools with many parameters and richer behavior). The follow-up mechanism
+will deepen coverage on interesting findings, so prioritize variety over redundancy.
 
 ## Tool
 Name: {tool_name}
@@ -429,11 +455,14 @@ Others for isolation tests: {other_companies}
 
 Return a JSON array where each element is:
 {{
-  "name": "short test name",
+  "name": "snake_case_test_name",
   "description": "what this test checks",
   "arguments": {{}},
   "expected_behavior": "what a correct response looks like"
 }}
+
+`name` MUST be snake_case (e.g. happy_path_recent_meetings, edge_invalid_company_id,
+stress_max_limit_nwn). Lowercase, words joined by underscores, no spaces or colons.
 
 Return ONLY the JSON array, nothing else."""
 
@@ -443,8 +472,9 @@ Return ONLY the JSON array, nothing else."""
     ]
 
     for attempt in range(2):
-        # Test case generation: prescriptive prompt + JSON template output. No
-        # benefit from extended reasoning — the model just follows the structure.
+        # Test case generation: think=False for speed — the prompt is prescriptive
+        # enough that the model fills the template directly. Flip to think=True
+        # for an overnight rigorous run to get more creative adversarial cases.
         raw, _ = _chat(messages, model=config.MODEL, think=False)
         try:
             cases_raw = _parse_json(raw)
@@ -512,10 +542,21 @@ Return ONLY the JSON verdict object."""
         {"role": "user", "content": prompt},
     ]
 
+    # Trivial tools (BambooHR date-math: get_time_off, get_birthdays,
+    # get_anniversaries, get_company_holidays) don't need chain-of-thought
+    # to evaluate. Skipping think= halves the per-call VRAM pressure on the
+    # 27B model and was the dominant source of "panic: failed to sample
+    # token" / "CUDA: illegal memory access" infrastructure events.
+    _TRIVIAL_EVAL_TOOLS = frozenset({
+        "get_time_off", "get_birthdays",
+        "get_anniversaries", "get_company_holidays",
+    })
+    think_for_eval = tool_name not in _TRIVIAL_EVAL_TOOLS
+
     last_err: Exception | None = None
     for attempt in range(2):
         try:
-            raw, reasoning = _chat(messages, model=config.MODEL)
+            raw, reasoning = _chat(messages, model=config.MODEL, think=think_for_eval)
             v = _parse_json(raw)
             verdict_str = v.get("verdict", "fail")
             # Boundary check: assay is binary pass/fail throughout. If the model
@@ -569,11 +610,11 @@ Response: {result_repr}
 
 Generate follow-up tests that probe this finding further.
 Return a JSON array (same schema as before: name, description, arguments, expected_behavior).
-Return ONLY the JSON array."""
+`name` MUST be snake_case. Return ONLY the JSON array."""
 
     try:
-        # Follow-up generation: same as test case generation — template-based JSON,
-        # no extended reasoning needed.
+        # Follow-up generation: think=False for speed. Flip to True for overnight
+        # rigorous runs if you want deeper probe-angle reasoning.
         raw, _ = _chat(
             [{"role": "system", "content": _SYSTEM}, {"role": "user", "content": prompt}],
             model=config.MODEL,

@@ -74,6 +74,8 @@ def find_task(query: str, company_id: str, limit: int | None = None) -> dict:
     company_id : Company identifier (e.g. "NWN", "DAI").
     limit      : Max results. If omitted, returns all matching rows.
     """
+    if not company_id:
+        return {"error": "company_id is required and cannot be empty"}
     err = validate_company(company_id)
     if err:
         return {"error": err}
@@ -165,6 +167,8 @@ def list_tasks(
     limit         : Max results. If omitted, returns all matching rows. Be mindful of
                     result size on broad queries (no status/date filters).
     """
+    if not company_id:
+        return {"error": "company_id is required and cannot be empty"}
     err = validate_company(company_id)
     if err:
         return {"error": err}
@@ -243,6 +247,8 @@ def get_task_details(ticket_ids: list[str], company_id: str) -> dict:
     ticket_ids : List of Wrike ticket IDs (e.g. ["IEAAAAAA3ABCDEF1", ...]).
     company_id : Company identifier.
     """
+    if not company_id:
+        return {"error": "company_id is required and cannot be empty"}
     err = validate_company(company_id)
     if err:
         return {"error": err}
@@ -282,6 +288,8 @@ def get_wrike_users(company_id: str) -> dict:
     ----------
     company_id : Company identifier (e.g. "NWN", "DAI").
     """
+    if not company_id:
+        return {"error": "company_id is required and cannot be empty"}
     err = validate_company(company_id)
     if err:
         return {"error": err}
@@ -332,7 +340,26 @@ def search_tasks(query: str, company_id: str, limit: int = 10) -> dict:
     query      : Natural language search query (e.g. "budget approval", "deployment risk").
     company_id : Company identifier — results are isolated to this tenant.
     limit      : Maximum results to return (default 10).
+
+    ## Inferring properties not in the search snippet
+    Each result contains only `rank`, `ticket_id`, and a short `excerpt` (≤500
+    chars from the matched chunk). Status, assignee, dates, full description,
+    and comments are NOT in the search response. If the user's question requires
+    any of those, take the ticket_ids from the top-N results and call
+    get_task_details(ticket_ids=[...], company_id=...) as a second pass.
+
+    Worked example: user asks "which active tickets touch the Wrike API
+    integration?"
+      1. search_tasks(query="Wrike API integration", company_id=X, limit=15)
+         → top ticket_ids ordered by semantic relevance
+      2. get_task_details(ticket_ids=<those>, company_id=X)
+         → filter the returned rows where status in ("Active", "Deferred")
+    Do NOT treat the excerpt as the ticket's full content; it is the matched
+    chunk only, and a ticket's most important field for the question may have
+    been in a different chunk that didn't rank #1.
     """
+    if not company_id:
+        return {"error": "company_id is required and cannot be empty"}
     err = validate_company(company_id)
     if err:
         return {"error": err}
@@ -373,6 +400,8 @@ def get_task_attachment_content(ticket_id: str, company_id: str) -> dict:
     ticket_id  : Wrike ticket ID (e.g. "IEAAAAAA3ABCDEF1").
     company_id : Company identifier (used to construct the S3 prefix).
     """
+    if not company_id:
+        return {"error": "company_id is required and cannot be empty"}
     err = validate_company(company_id)
     if err:
         return {"error": err}
@@ -433,6 +462,8 @@ def get_project_timeline(
     start_date : ISO date "YYYY-MM-DD" — inclusive lower bound.
     end_date   : ISO date "YYYY-MM-DD" — exclusive upper bound.
     """
+    if not company_id:
+        return {"error": "company_id is required and cannot be empty"}
     err = validate_company(company_id)
     if err:
         return {"error": err}
@@ -544,6 +575,8 @@ def ingest_document(s3_key: str, company_id: str, ticket_id: str) -> dict:
     company_id : Company identifier — document will be indexed under this tenant.
     ticket_id  : Wrike ticket ID to associate the document with.
     """
+    if not company_id:
+        return {"error": "company_id is required and cannot be empty"}
     err = validate_company(company_id)
     if err:
         return {"error": err}

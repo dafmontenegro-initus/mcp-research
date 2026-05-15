@@ -64,6 +64,7 @@ def _filter_overlap(
     year_agnostic: bool = False,
 ) -> list[dict]:
     result = []
+    today = date.today()
     for e in entries:
         s = e.get("start")
         if not s:
@@ -71,19 +72,24 @@ def _filter_overlap(
         en = e.get("end") or s  # single-day events (birthdays, anniversaries) have no DTEND
 
         if year_agnostic:
-            # Normalize event to the window's year (or next year if it wraps)
-            def _normalize(d: date) -> date:
-                for y in (window_start.year, window_start.year + 1):
-                    try:
-                        nd = d.replace(year=y)
-                    except ValueError:
-                        nd = d.replace(year=y, day=28)  # Feb 29 edge case
-                    if window_start <= nd <= window_end:
-                        return nd
-                return d.replace(year=window_start.year)
+            # Year-agnostic normalization only applies to milestones already
+            # reached. Future-natural events (e.g. a new hire's "1 year" event
+            # dated next year) stay at their original date so the standard
+            # overlap check below only surfaces them when the caller queries
+            # a window that actually contains that future date.
+            if s.year <= today.year:
+                def _normalize(d: date) -> date:
+                    for y in (window_start.year, window_start.year + 1):
+                        try:
+                            nd = d.replace(year=y)
+                        except ValueError:
+                            nd = d.replace(year=y, day=28)  # Feb 29 edge case
+                        if window_start <= nd <= window_end:
+                            return nd
+                    return d.replace(year=window_start.year)
 
-            s = _normalize(s)
-            en = _normalize(en)
+                s = _normalize(s)
+                en = _normalize(en)
 
         if en < window_start or s > window_end:
             continue
@@ -123,6 +129,21 @@ def get_time_off(start: str | None = None, end: str | None = None) -> dict:
     ----------
     start : ISO date (YYYY-MM-DD). Defaults to this Monday.
     end   : ISO date (YYYY-MM-DD). Defaults to this Sunday.
+
+    ## Inferring true available working days
+    This tool only returns PTO/OOO entries. It does NOT subtract weekends or
+    company holidays. To answer "how many working days does X have left in
+    period P":
+      1. Compute the set of weekdays (Mon–Fri) inside P.
+      2. Call get_company_holidays(start=P.start, end=P.end) — subtract every
+         day inside any returned holiday range (holidays often span more than
+         one day; use start..end inclusive).
+      3. Call get_time_off(start=P.start, end=P.end), filter entries where
+         name == X, and subtract their days_out field (already clipped to the
+         window).
+    The remainder is X's true available working days. Do NOT skip step 2 — a
+    week with a single mid-week holiday silently invalidates a "5 working days"
+    answer derived only from PTO data.
     """
     raw = _fetch_ical(BAMBOOHR_TIMEOFF_URL)
     if isinstance(raw, dict):
@@ -199,6 +220,22 @@ def get_anniversaries(start: str | None = None, end: str | None = None) -> dict:
     ----------
     start : ISO date (YYYY-MM-DD). Defaults to this Monday.
     end   : ISO date (YYYY-MM-DD). Defaults to this Sunday.
+
+    ## Inferring tenure for new hires
+    This tool returns ANNIVERSARY MILESTONES (1 year, 2 years, ...), not hire dates.
+    If someone doesn't appear in the current year's results, they may not have
+    reached their first anniversary yet. Query future years (current_year + 1,
+    then +2 if still not found) to locate their first milestone — its date minus
+    N years is the hire date.
+
+    Worked example (today = 2026-05-15, user asks tenure for "Daniel Rozo"):
+      - Query 2026 (start=2026-01-01, end=2026-12-31): not found → maybe a new hire
+      - Query 2027: returns "Daniel Rozo, 2027-05-04, 1 year"
+      - Inference: hire_date = 2027-05-04 minus 1 year = 2026-05-04
+      - Tenure today = 2026-05-15 minus 2026-05-04 = 11 days
+
+    Do NOT report a not-found result as "no record exists" until you have checked
+    at least the next two future years.
     """
     raw = _fetch_ical(BAMBOOHR_ANNIVERSARIES_URL)
     if isinstance(raw, dict):

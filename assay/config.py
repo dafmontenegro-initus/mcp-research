@@ -16,5 +16,6 @@ MODEL: str = os.getenv("MODEL", "qwen3.6:27b")
 SLOW_MS: int = int(os.getenv("SLOW_MS", "5000"))
 # A tool call taking longer than this gets a "performance" critical finding.
 CRITICAL_LATENCY_MS: int = int(os.getenv("CRITICAL_LATENCY_MS", "15000"))
-# Max reflexion follow-ups per interesting finding.
+# Max reflexion follow-ups per interesting finding. 3 for fast iterative runs,
+# 10 for exhaustive overnight rigor.
 MAX_FOLLOWUPS: int = int(os.getenv("MAX_FOLLOWUPS", "3"))

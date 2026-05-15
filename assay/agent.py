@@ -205,11 +205,16 @@ def run(tool_filter: str | None = None, dry_run: bool = False) -> None:
 
     report = Report()
 
+    # tool_filter can be None (all), a single name, or comma-separated names.
+    filter_set = (
+        {t.strip() for t in tool_filter.split(",") if t.strip()}
+        if tool_filter else None
+    )
     tools_to_test = [
         t for t in tools
         if t.name not in _SKIP_TOOLS
         and t.name not in _DISCOVERY_TOOLS
-        and (tool_filter is None or t.name == tool_filter)
+        and (filter_set is None or t.name in filter_set)
     ]
     def _handle_interrupt(sig, frame):
         console.print("\n\n[yellow]Interrupted — writing partial report...[/]")
